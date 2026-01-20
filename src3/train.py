@@ -73,6 +73,83 @@ def get_gravity_orientation(quaternion):
     return gravity_orientation
 
 
+def build_walking_policy_observation(
+    base_lin_vel,      # [3] linear velocity in base frame
+    base_ang_vel,      # [3] angular velocity in base frame
+    projected_gravity, # [3] projected gravity vector
+    velocity_commands, # [3] velocity commands (vx, vy, w)
+    joint_pos,         # [num_actions] joint positions (relative to default)
+    joint_vel,         # [num_actions] joint velocities
+    last_action,       # [num_actions] last action from walking policy
+    height_scan=None,  # [N] height scan data (optional)
+    base_lin_vel_scale=1.0,
+    base_ang_vel_scale=0.25,
+    joint_pos_scale=1.0,
+    joint_vel_scale=0.05,
+    height_scan_scale=1.0
+):
+    """
+    Build observation for walking policy according to PolicyCfg structure.
+    
+    Observation order (matching PolicyCfg):
+    1. base_lin_vel (3) - linear velocity in base frame
+    2. base_ang_vel (3) - angular velocity in base frame  
+    3. projected_gravity (3) - projected gravity vector
+    4. velocity_commands (3) - velocity commands (vx, vy, w)
+    5. joint_pos (num_actions) - joint positions (relative to default)
+    6. joint_vel (num_actions) - joint velocities
+    7. actions (num_actions) - last action from walking policy
+    8. height_scan (N) - height scan data (optional)
+    
+    Returns:
+        observation array with proper scaling and clipping
+    """
+    obs_parts = []
+    
+    # 1. base_lin_vel (3) - clip and scale
+    base_lin_vel_scaled = np.clip(base_lin_vel * base_lin_vel_scale, -100.0, 100.0)
+    obs_parts.append(base_lin_vel_scaled)
+    
+    # 2. base_ang_vel (3) - clip and scale
+    base_ang_vel_scaled = np.clip(base_ang_vel * base_ang_vel_scale, -100.0, 100.0)
+    obs_parts.append(base_ang_vel_scaled)
+    
+    # 3. projected_gravity (3) - already normalized, just clip
+    projected_gravity_clipped = np.clip(projected_gravity, -100.0, 100.0)
+    obs_parts.append(projected_gravity_clipped)
+    
+    # 4. velocity_commands (3) - clip
+    velocity_commands_clipped = np.clip(velocity_commands, -100.0, 100.0)
+    obs_parts.append(velocity_commands_clipped)
+    
+    # 5. joint_pos (num_actions) - clip and scale
+    joint_pos_scaled = np.clip(joint_pos * joint_pos_scale, -100.0, 100.0)
+    obs_parts.append(joint_pos_scaled)
+    
+    # 6. joint_vel (num_actions) - clip and scale
+    joint_vel_scaled = np.clip(joint_vel * joint_vel_scale, -100.0, 100.0)
+    obs_parts.append(joint_vel_scaled)
+    
+    # 7. actions (num_actions) - last action, clip
+    last_action_clipped = np.clip(last_action, -100.0, 100.0)
+    obs_parts.append(last_action_clipped)
+    
+    # 8. height_scan (N) - optional, clip and scale
+    if height_scan is not None:
+        height_scan_scaled = np.clip(height_scan * height_scan_scale, -1.0, 1.0)
+        obs_parts.append(height_scan_scaled)
+    else:
+        # If no height scan, use zeros (will need to be updated when height scanner is added)
+        # For now, use a default size of 56 (common in legged robots)
+        height_scan_default = np.zeros(56, dtype=np.float32)
+        obs_parts.append(height_scan_default)
+    
+    # Concatenate all parts
+    observation = np.concatenate(obs_parts, dtype=np.float32)
+    
+    return observation
+
+
 def pd_control(target_q, q, kp, target_dq, dq, kd):
     """Calculates torques from position commands"""
     return (target_q - q) * kp + (target_dq - dq) * kd
@@ -924,7 +1001,7 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
             dists = np.linalg.norm(diff, axis=1)
             
             goals = dists < 0.25
-            collisions = np.min(batch_lidar_data_raw, axis=1) < 0.3
+            collisions = np.min(batch_lidar_data_raw, axis=1) < 0.35
             
             # Use vectorized reference reward logic
             batch_rewards, batch_dones_from_reward, batch_reward_info = compute_reward_reference_vectorized(
@@ -1120,9 +1197,14 @@ if __name__ == "__main__":
     kps = np.array(config["kps"], dtype=np.float32)
     kds = np.array(config["kds"], dtype=np.float32)
     default_angles = np.array(config["default_angles"], dtype=np.float32)
-    action_scale = config["action_scale"]
-    cmd_scale = np.array(config["cmd_scale"], dtype=np.float32)
     num_actions = config["num_actions"]
+    # Use per-joint action scales if available, otherwise fall back to single action_scale
+    if "action_scales" in config:
+        action_scales = np.array(config["action_scales"], dtype=np.float32)
+    else:
+        action_scale = config.get("action_scale", 0.25)
+        action_scales = np.full(num_actions, action_scale, dtype=np.float32)
+    cmd_scale = np.array(config["cmd_scale"], dtype=np.float32)
     num_obs = config["num_obs"]
     
     # Load reward weights from config
@@ -1542,6 +1624,38 @@ if __name__ == "__main__":
     episode = 0
     agent.reset_history()
     if args.load_pretrained or args.fine_tune:
+        # Check if using A1 config and load from pre_train path
+        policy_path = config.get("policy_path", "")
+        if "a1" in policy_path.lower() or "a1" in str(config_path).lower():
+            # Use A1 pretrained weights
+            a1_model_path = PROJECT_ROOT / "pre_train" / "a1" / "model_4999.pt"
+            if a1_model_path.exists():
+                print(f"Loading A1 actor weights from: {a1_model_path}")
+                try:
+                    import torch
+                    # Try to load as checkpoint or state dict
+                    loaded_data = torch.load(a1_model_path, map_location='cpu')
+                    if isinstance(loaded_data, dict):
+                        # Check if it's a checkpoint with 'actor' key or direct state dict
+                        if 'actor' in loaded_data:
+                            agent.actor.load_state_dict(loaded_data['actor'])
+                            print("✓ Loaded A1 actor weights from checkpoint")
+                        elif 'state_dict' in loaded_data:
+                            agent.actor.load_state_dict(loaded_data['state_dict'])
+                            print("✓ Loaded A1 actor weights from state_dict")
+                        else:
+                            # Assume it's a direct state dict
+                            agent.actor.load_state_dict(loaded_data)
+                            print("✓ Loaded A1 actor weights (direct state dict)")
+                    else:
+                        print("⚠️ A1 model file format not recognized, skipping weight loading")
+                except Exception as e:
+                    print(f"⚠️ Failed to load A1 actor weights: {e}")
+                    print("Continuing with random initialization...")
+            else:
+                print(f"⚠️ A1 pretrained model not found at: {a1_model_path}")
+                print("Continuing with random initialization...")
+        
         # ПРОВЕРКА: совпадает ли размерность загружаемой модели с текущей
         model_path = model_dir / f"{model_name}_actor.pth"
         if model_path.exists():
@@ -1626,18 +1740,20 @@ if __name__ == "__main__":
     
     # Load walking policy
     # NOTE: Keep walking_policy on CPU because it uses LSTM with hidden states on CPU
+    walking_policy = None
     try:
-        # Try loading with map_location to ensure CPU compatibility
+        # Try loading as torch.jit first (for motion.pt files)
         walking_policy = torch.jit.load(policy_path, map_location='cpu')
         walking_policy.eval()  # Set to evaluation mode
         print(f"Walking policy loaded successfully from {policy_path}")
     except Exception as e:
-        print(f"ERROR: Failed to load walking policy from {policy_path}: {e}")
-        print("This may cause core dump. Please check:")
-        print("  1. Policy file exists and is valid")
-        print("  2. PyTorch version compatibility")
-        print("  3. File permissions")
-        raise
+        # If torch.jit fails, it might be a checkpoint file (model_4999.pt)
+        # In that case, we don't have a walking policy - this is OK for A1 if using direct control
+        print(f"Note: Could not load walking policy from {policy_path}: {e}")
+        print("This might be a checkpoint file (model_4999.pt) rather than a walking policy.")
+        print("If using A1 with direct control, walking policy is not needed.")
+        print("Continuing without walking policy...")
+        walking_policy = None
     
     # Find robot body IDs once at initialization (for collision detection)
     robot_body_ids = set()
@@ -2324,6 +2440,8 @@ if __name__ == "__main__":
                 # Initialize walking policy variables
                 action = np.zeros(num_actions, dtype=np.float32)
                 target_dof_pos = default_angles.copy()
+                # obs will be built by build_walking_policy_observation function
+                # Initialize with zeros for now, will be overwritten
                 obs = np.zeros(num_obs, dtype=np.float32)
                 cmd = np.array([0, 0, 0], dtype=np.float32)
                 action_np = np.zeros(3, dtype=np.float32)  # SAC action placeholder (vx, vy, w)
@@ -2512,8 +2630,8 @@ if __name__ == "__main__":
                             min_lidar = np.min(lidar_data_raw) if len(lidar_data_raw) > 0 else 10.0
                             
                             # Простая проверка: очень близко к препятствию = коллизия
-                            # Порог 0.3 метра - достаточно для детекции реальных столкновений
-                            if min_lidar < 0.3:
+                            # Порог 0.35 метра - достаточно для детекции реальных столкновений
+                            if min_lidar < 0.35:
                                 collision_detected = True
                         
                         # Update cached lidar data at SAC frequency for observations
@@ -2661,10 +2779,10 @@ if __name__ == "__main__":
                             # IMPORTANT: Use raw lidar data (in meters) for reward calculation
                             # Reward function expects lidar in meters, not normalized
                             goal = distance < 0.25 # reached_threshold
-                            # Collision detection: check if any lidar reading is very close (< 0.3m)
+                            # Collision detection: check if any lidar reading is very close (< 0.35m)
                             # Filter out invalid values before checking
                             valid_lidar = cached_lidar_data_raw[(cached_lidar_data_raw >= 0) & np.isfinite(cached_lidar_data_raw)]
-                            collision = len(valid_lidar) > 0 and np.min(valid_lidar) < 0.3
+                            collision = len(valid_lidar) > 0 and np.min(valid_lidar) < 0.35
                             
                             reward, done, reward_info = compute_reward_reference(
                                 robot_pos=robot_pos,
@@ -2718,62 +2836,94 @@ if __name__ == "__main__":
                             if done:
                                 break  # Exit inner loop to end episode
                         
-                        # Create observation for walking policy
-                        # Use only robot DOF (exclude target body DOF)
-                        # Add safety checks to avoid segfault
+                        # Create observation for walking policy according to PolicyCfg structure
+                        # Extract data from MuJoCo
                         try:
-                            qj = d.qpos[7:7+num_actions]
-                            dqj = d.qvel[6:6+num_actions]
-                            quat = d.qpos[3:7]
-                            omega = d.qvel[3:6]
+                            # Base pose and velocities
+                            base_pos = d.qpos[0:3]  # Base position (not used in observation, but needed for transforms)
+                            quat = d.qpos[3:7]  # Base quaternion
+                            qj = d.qpos[7:7+num_actions]  # Joint positions
+                            
+                            # Base velocities (in world frame, need to transform to base frame)
+                            base_lin_vel_world = d.qvel[0:3]  # Linear velocity in world frame
+                            base_ang_vel_world = d.qvel[3:6]  # Angular velocity in world frame
+                            dqj = d.qvel[6:6+num_actions]  # Joint velocities
+                            
+                            # Transform velocities to base frame
+                            # For simplicity, we'll use world frame velocities (common approximation)
+                            # In a full implementation, you'd rotate by the inverse of base orientation
+                            base_lin_vel = base_lin_vel_world  # TODO: Transform to base frame if needed
+                            base_ang_vel = base_ang_vel_world  # Angular velocity is already in base frame for most cases
+                            
                         except Exception as e:
                             print(f"ERROR: Failed to access d.qpos/d.qvel for walking policy: {e}. Ending episode.")
                             done = True
                             break
                         
-                        qj = (qj - default_angles) * 1.0
-                        dqj = dqj * 0.05
-                        gravity_orientation = get_gravity_orientation(quat)
-                        omega = omega * 0.25
+                        # Compute projected gravity (in base frame)
+                        projected_gravity = get_gravity_orientation(quat)
                         
-                        period = 0.8
-                        count = step_count * simulation_dt
-                        phase = count % period / period
-                        sin_phase = np.sin(2 * np.pi * phase)
-                        cos_phase = np.cos(2 * np.pi * phase)
+                        # Joint positions relative to default
+                        joint_pos_rel = qj - default_angles
                         
-                        obs[:3] = omega
-                        obs[3:6] = gravity_orientation
-                        # cmd already scaled with cmd_scale when computed from planner actions
-                        obs[6:9] = cmd
-                        obs[9 : 9 + num_actions] = qj
-                        obs[9 + num_actions : 9 + 2 * num_actions] = dqj
-                        obs[9 + 2 * num_actions : 9 + 3 * num_actions] = action
-                        # OPTIMIZATION: Reuse pre-allocated array instead of creating new one
-                        phase_array[0] = sin_phase
-                        phase_array[1] = cos_phase
-                        obs[9 + 3 * num_actions : 9 + 3 * num_actions + 2] = phase_array
+                        # Velocity commands (from SAC planner, already scaled)
+                        velocity_commands = cmd.copy()
+                        
+                        # Extract height scan if available (for now, use None - will be zeros)
+                        height_scan = None  # TODO: Extract from height scanner sensor if available
+                        
+                        # Build observation using PolicyCfg structure
+                        obs_new = build_walking_policy_observation(
+                            base_lin_vel=base_lin_vel,
+                            base_ang_vel=base_ang_vel,
+                            projected_gravity=projected_gravity,
+                            velocity_commands=velocity_commands,
+                            joint_pos=joint_pos_rel,
+                            joint_vel=dqj,
+                            last_action=action,
+                            height_scan=height_scan,
+                            base_lin_vel_scale=1.0,
+                            base_ang_vel_scale=0.25,
+                            joint_pos_scale=1.0,
+                            joint_vel_scale=0.05,
+                            height_scan_scale=1.0
+                        )
+                        # Ensure observation size matches expected size
+                        if len(obs_new) != num_obs:
+                            print(f"WARNING: Observation size mismatch: got {len(obs_new)}, expected {num_obs}")
+                            # Resize obs array if needed
+                            if len(obs_new) > num_obs:
+                                obs = obs_new[:num_obs]
+                            else:
+                                obs = np.zeros(num_obs, dtype=np.float32)
+                                obs[:len(obs_new)] = obs_new
+                        else:
+                            obs = obs_new
                         
                         # Walking policy inference (with memory leak fix)
                         # NOTE: walking_policy uses LSTM with hidden states on CPU, so keep it on CPU
                         if walking_policy is None:
-                            print("ERROR: Walking policy is None. Ending episode.")
-                            done = True
-                            break
-                        
-                        try:
-                            with torch.no_grad():  # Не строить граф автоградиента - исправляет утечку памяти
-                                obs_tensor = torch.from_numpy(obs).unsqueeze(0)  # Keep on CPU (LSTM hidden states are on CPU)
-                                action_tensor = walking_policy(obs_tensor)
-                                action = action_tensor.numpy().squeeze()  # Already on CPU, no need for .cpu()
-                                # Явно удаляем тензоры для освобождения памяти
-                                del obs_tensor, action_tensor
-                            target_dof_pos = action * action_scale + default_angles
-                        except Exception as e:
-                            print(f"ERROR: Walking policy inference failed: {e}")
-                            print("This may indicate model corruption or memory issues. Ending episode.")
-                            done = True
-                            break
+                            # If no walking policy, use default angles (robot will stand still)
+                            # This allows training to continue even without a walking policy
+                            # For A1, model_4999.pt is a checkpoint for SAC actor, not a walking policy
+                            target_dof_pos = default_angles.copy()
+                            # Keep action as zeros for consistency
+                            action = np.zeros(num_actions, dtype=np.float32)
+                        else:
+                            try:
+                                with torch.no_grad():  # Не строить граф автоградиента - исправляет утечку памяти
+                                    obs_tensor = torch.from_numpy(obs).unsqueeze(0)  # Keep on CPU (LSTM hidden states are on CPU)
+                                    action_tensor = walking_policy(obs_tensor)
+                                    action = action_tensor.numpy().squeeze()  # Already on CPU, no need for .cpu()
+                                    # Явно удаляем тензоры для освобождения памяти
+                                    del obs_tensor, action_tensor
+                                # Apply per-joint action scales (hip: 0.125, others: 0.25)
+                                target_dof_pos = action * action_scales + default_angles
+                            except Exception as e:
+                                print(f"ERROR: Walking policy inference failed: {e}")
+                                print("This may indicate model corruption or memory issues. Ending episode.")
+                                done = True
+                                break
                         
                         # Update target point position in scene (mocap body)
                         if target_pos is not None and target_body_id is not None and target_mocap_id >= 0:

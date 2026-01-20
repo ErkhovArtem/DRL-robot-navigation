@@ -351,7 +351,7 @@ def compute_reward_reference_vectorized(robot_pos, target_pos, lidar_data, actio
     #   where k = obstacle_exponential_scale, x = min_dist
     # If min_dist <= death_distance: penalty = MAXIMUM (not 0!)
     obstacle_threshold = reward_weights.get('obstacle_threshold', 1.5)
-    death_distance = 0.3  # Distance where collision occurs
+    death_distance = 0.35  # Distance where collision occurs
     exponential_scale = reward_weights.get('obstacle_exponential_scale', 4.0)
     
     # Calculate exponential penalty for distances between threshold and death distance
