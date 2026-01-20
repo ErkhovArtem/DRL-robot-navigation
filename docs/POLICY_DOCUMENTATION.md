@@ -1141,8 +1141,8 @@ python export_to_onnx.py --model_path sac_actor.pth --config_path g1.yaml --outp
 
 ```bash
 python export_to_onnx.py \
-    --model_path src3/models/sac_actor.pth \
-    --config_path src3/configs/g1.yaml \
+    --model_path data/models/sac_actor.pth \
+    --config_path configs/a1.yaml \
     --output_path sac_actor.onnx
 ```
 
@@ -1478,32 +1478,40 @@ train_every_n: 1
 ## 12. Структура проекта
 
 ```
-G1_PathPlanning/
-├── src3/
-│   ├── configs/
-│   │   ├── g1.yaml              # Базовый конфиг
-│   │   └── curriculum.yaml      # Curriculum learning (7 уровней)
-│   ├── models/
-│   │   ├── sac_actor.pth        # Веса Actor
-│   │   ├── sac_critic.pth       # Веса Critic
-│   │   └── sac_metadata.json    # Метаданные (episode number)
-│   ├── policy/
+Dog_PathPlanning/
+├── src/                          # Исходный код
+│   ├── policy/                   # RL алгоритмы
 │   │   └── SAC/
 │   │       ├── SAC_actor.py     # Actor архитектура
 │   │       ├── SAC_critic.py    # Critic архитектура
 │   │       ├── SAC.py           # SAC алгоритм
 │   │       └── SAC_utils.py     # Утилиты
+│   └── utils/                    # Утилиты
+│       ├── reward.py            # Функция награды
+│       ├── target_generator.py  # Генерация целей
+│       ├── scene_generator.py   # Генерация препятствий
+│       ├── curriculum.py        # Curriculum learning manager
+│       ├── observation.py       # Функции построения наблюдений
+│       └── mjx_utils.py         # MJX утилиты для параллельной симуляции
+├── scripts/                      # Исполняемые скрипты
 │   ├── train.py                 # Основной скрипт обучения
 │   ├── export_to_onnx.py        # Экспорт в ONNX
-│   ├── reward.py                # Функция награды
-│   ├── target_generator.py      # Генерация целей
-│   ├── scene_generator.py       # Генерация препятствий
+│   └── inference_onnx.py        # Инференс ONNX модели
+├── configs/                      # Конфигурационные файлы
+│   ├── a1.yaml                  # Конфигурация для A1 робота
+│   └── curriculum.yaml          # Curriculum learning (7 уровней)
+├── data/                         # Данные (модели, логи, буферы)
+│   ├── models/                  # Обученные модели
+│   │   ├── sac_actor.pth        # Веса Actor
+│   │   ├── sac_critic.pth       # Веса Critic
+│   │   └── sac_metadata.json    # Метаданные (episode number)
+│   ├── buffer/                  # Replay buffer данные
+│   └── runs/                    # TensorBoard логи
+├── assets/                       # Статические ресурсы
+│   └── unitree_a1/              # Модель робота Unitree A1
+├── docs/                         # Документация
 │   └── POLICY_DOCUMENTATION.md  # Эта документация
-├── g1_description/
-│   └── scene.xml                # MuJoCo сцена с роботом
-└── pre_train/
-    └── g1/
-        └── motion.pt            # Walking policy (torch.jit)
+└── requirements.txt              # Зависимости Python
 ```
 
 ---
@@ -1644,7 +1652,7 @@ if lidar_data is None or not have_robot_pose or target_point is None:
 
 ```bash
 # Экспорт в текущей среде
-python export_to_onnx.py --model_path src3/models/sac_actor.pth --output_path sac_actor.onnx
+python scripts/export_to_onnx.py --model_path data/models/sac_actor.pth --output_path sac_actor.onnx
 ```
 
 ### Новая conda среда (если несовместимы)
@@ -1662,7 +1670,7 @@ pip install pyyaml numpy
 pip install onnxruntime  # Опционально, для проверки модели
 
 # Экспорт
-python export_to_onnx.py --model_path src3/models/sac_actor.pth --output_path sac_actor.onnx
+python scripts/export_to_onnx.py --model_path data/models/sac_actor.pth --output_path sac_actor.onnx
 ```
 
 **Важно:**
@@ -1699,34 +1707,7 @@ python export_to_onnx.py --model_path src3/models/sac_actor.pth --output_path sa
 
 ## Приложение B: Структура проекта
 
-```
-G1_PathPlanning/
-├── src3/
-│   ├── configs/
-│   │   ├── g1.yaml              # Базовый конфиг
-│   │   └── curriculum.yaml      # Curriculum learning (7 уровней)
-│   ├── models/
-│   │   ├── sac_actor.pth        # Веса Actor
-│   │   ├── sac_critic.pth       # Веса Critic
-│   │   └── sac_metadata.json    # Метаданные (episode number)
-│   ├── policy/
-│   │   └── SAC/
-│   │       ├── SAC_actor.py     # Actor архитектура
-│   │       ├── SAC_critic.py    # Critic архитектура
-│   │       ├── SAC.py           # SAC алгоритм
-│   │       └── SAC_utils.py     # Утилиты
-│   ├── train.py                 # Основной скрипт обучения
-│   ├── export_to_onnx.py        # Экспорт в ONNX
-│   ├── reward.py                # Функция награды
-│   ├── target_generator.py      # Генерация целей
-│   ├── scene_generator.py       # Генерация препятствий
-│   └── POLICY_DOCUMENTATION.md  # Эта документация
-├── g1_description/
-│   └── scene.xml                # MuJoCo сцена с роботом
-└── pre_train/
-    └── g1/
-        └── motion.pt            # Walking policy (torch.jit)
-```
+См. раздел 12 выше для актуальной структуры проекта.
 
 ---
 

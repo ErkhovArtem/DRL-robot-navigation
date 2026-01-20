@@ -1,4 +1,40 @@
-src3/buffer/*.npz
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Model files
 *.pt
 *.pth
+*.pkl
+
+# Data files
+data/buffer/*.npz
+data/models/*.pt
+data/models/*.pth
+data/runs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+venv/
+env/
+ENV/

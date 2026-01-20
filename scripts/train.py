@@ -34,26 +34,25 @@ import gc  # Для принудительной сборки мусора (ис
 from torch.utils.tensorboard import SummaryWriter
 import time
 
-# MJX imports for parallelization
-try:
-    import jax
-    import jax.numpy as jnp
-    from mujoco import mjx
-    MJX_AVAILABLE = True
-    print("MJX (MuJoCo XLA) is available for GPU acceleration")
-except ImportError:
-    MJX_AVAILABLE = False
-    print("Warning: MJX not available. Install with: pip install mujoco-mjx")
-    print("Falling back to sequential CPU simulation")
+# MJX availability is checked in mjx_utils
 
-from reward import compute_reward, compute_reward_vectorized, compute_reward_reference, compute_reward_reference_vectorized
-from target_generator import SpawnPointGenerator, get_target_info, ROOM_X_MIN, ROOM_X_MAX, ROOM_Y_MIN, ROOM_Y_MAX
-from scene_generator import regenerate_scene_obstacles
+# Project root directory
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Import from package (after pip install -e .)
+from utils.reward import compute_reward, compute_reward_vectorized, compute_reward_reference, compute_reward_reference_vectorized
+from utils.target_generator import SpawnPointGenerator, get_target_info, ROOM_X_MIN, ROOM_X_MAX, ROOM_Y_MIN, ROOM_Y_MAX
+from utils.scene_generator import regenerate_scene_obstacles
 from policy.SAC.SAC import SAC
 from policy.replay_buffer import ReplayBuffer
-
-# Project root directory (parent of src/)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from utils.curriculum import CurriculumManager
+from utils.observation import (
+    get_gravity_orientation, pd_control, build_walking_policy_observation,
+    downsample_lidar, fix_negative_lidar_values, compute_lidar_sensor_angles,
+    process_lidar_to_sectors, build_actor_observation, build_critic_base_observation,
+    build_critic_observation
+)
+from utils.mjx_utils import create_mjx_batched_step_fn, initialize_batch_episodes_mjx, MJX_AVAILABLE
 
 
 def get_gravity_orientation(quaternion):
@@ -1102,12 +1101,12 @@ if __name__ == "__main__":
     config_path = None
     config_file_path = Path(args.config_file)
     
-    # Build potential paths to try (prioritize src/configs/)
+    # Build potential paths to try (prioritize configs/)
     potential_paths = [
         config_file_path,  # Relative to current directory
         Path.cwd() / config_file_path,  # Explicitly from current directory
-        PROJECT_ROOT / "src" / "configs" / config_file_path.name,  # src/configs/filename.yaml
-        PROJECT_ROOT / "src" / config_file_path,  # src/configs/g1.yaml (if relative path)
+        PROJECT_ROOT / "configs" / config_file_path.name,  # configs/filename.yaml
+        PROJECT_ROOT / "configs" / config_file_path,  # configs/g1.yaml (if relative path)
     ]
     
     # Try each path until one exists
@@ -1131,7 +1130,7 @@ if __name__ == "__main__":
     
     # Load curriculum config if exists
     curriculum_config = {}
-    curriculum_path = PROJECT_ROOT / "src" / "configs" / "curriculum.yaml"
+    curriculum_path = PROJECT_ROOT / "configs" / "curriculum.yaml"
     if curriculum_path.exists():
         print(f"Loading curriculum config from: {curriculum_path}")
         with open(curriculum_path, "r") as f:
@@ -1429,9 +1428,9 @@ if __name__ == "__main__":
     # Для совместимости используем actor_state_dim как state_dim (актор всегда получает первые actor_state_dim признаков)
     state_dim = actor_state_dim
 
-    model_dir = PROJECT_ROOT / "src" / "models"
+    model_dir = PROJECT_ROOT / "data" / "models"
     model_name = "sac"
-    buffer_dir = PROJECT_ROOT / "src" / "buffer"
+    buffer_dir = PROJECT_ROOT / "data" / "buffer"
     
     # Create model and buffer directories if they don't exist
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -1440,7 +1439,7 @@ if __name__ == "__main__":
     buffer_dir.mkdir(parents=True, exist_ok=True)
     
     # Initialize TensorBoard for logging (with unique subdirectory for each run)
-    base_log_dir = Path(args.log_dir) if args.log_dir.startswith("/") else PROJECT_ROOT / "src" / args.log_dir
+    base_log_dir = Path(args.log_dir) if args.log_dir.startswith("/") else PROJECT_ROOT / "data" / args.log_dir
     # Create unique subdirectory for each run
     from datetime import datetime
     try:

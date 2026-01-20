@@ -1,6 +1,6 @@
 # A1 Robot Configuration
 policy_path: "pre_train/a1/model_4999.pt"
-xml_path: "unitree_a1/scene.xml"
+xml_path: "assets/unitree_a1/scene.xml"
 
 # Total simulation time
 simulation_duration: 60.0
@@ -99,71 +99,6 @@ sac:
   training_iterations: 4        # MUCH SMALLER - avoid overfit (was 500!)
   batch_size: 256               # SMALLER - more stable (was 1024)
   min_buffer_size: 5000         # Larger buffer before training starts         
-
-# TD3 Hyperparameters
-td3:
-  history_length: 2
-  
-  actor:
-    hidden_dim: [256, 128, 64]  # Custom layer sizes (hidden_depth auto-calculated)
-  
-  critic:
-    hidden_dim: [256, 128, 64]  # Custom layer sizes (hidden_depth auto-calculated)
-    state_dim: 45
-  
-  actor_lr: 0.0003
-  critic_lr: 0.0003
-  
-  discount: 0.99
-  critic_tau: 0.005
-  policy_noise: 0.2
-  noise_clip: 0.5
-  exploration_noise: 0.1
-  policy_frequency: 2
-  
-  max_action: 1.0
-  
-  train_every_n: 2
-  training_iterations: 200
-  batch_size: 256
-  min_buffer_size: 4096
-
-# PPO Hyperparameters - STABLE CONFIGURATION
-ppo:
-  # Observation history
-  history_length: 2  # Sufficient for velocity estimation
-  
-  # Network architecture - conservative sizes for stability
-  actor:
-    hidden_dim: [256, 128]  # Custom layer sizes (hidden_depth auto-calculated)
-  
-  critic:
-    hidden_dim: [256, 128]  # Same as actor for stability (hidden_depth auto-calculated)
-    state_dim: 45  # PPO uses same obs as actor (no asymmetric critic)
-  
-  # Learning rate - CleanRL standard
-  learning_rate: 0.0003  # CleanRL standard (3e-4)
-  
-  # PPO core hyperparameters (CleanRL-based)
-  discount: 0.99              # Discount factor
-  gae_lambda: 0.95            # GAE lambda for advantage estimation
-  clip_coef: 0.2              # PPO clipping coefficient (standard)
-  ent_coef: 0.01              # Entropy coefficient for exploration (increased from 0.0 for continuous control)
-  vf_coef: 0.5                # Value function loss coefficient
-  max_grad_norm: 0.5          # CleanRL standard gradient clipping
-  clip_vloss: true            # Clip value loss (helps stability)
-  norm_adv: true              # Normalize advantages (standard practice)
-  update_epochs: 4            # Balanced for replay buffer (CleanRL uses 10, but with replay buffer 4-6 is safer)
-  num_minibatches: 8          # Appropriate for batch_size=256 (minibatch_size=32)
-  
-  # Action space
-  max_action: 1.0
-  
-  # Training schedule - conservative for replay buffer usage
-  train_every_n: 2            # Train every 2 episodes (more stable)
-  training_iterations: 20      # Single pass through collected data
-  batch_size: 256             # Smaller batch for stability (standard size)
-  min_buffer_size: 2048       # More data before training starts
 
 # Reward weights - COLLISION AVOIDANCE FOCUSED
 reward_weights:
