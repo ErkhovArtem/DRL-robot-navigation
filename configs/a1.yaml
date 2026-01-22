@@ -1,5 +1,5 @@
 # A1 Robot Configuration
-policy_path: "pre_train/a1/model_4999.pt"
+policy_path: "data/walking_policy/model_4999.pt"
 xml_path: "assets/unitree_a1/scene.xml"
 
 # Total simulation time
@@ -39,7 +39,7 @@ num_actions: 12  # Number of robot DOF for walking policy
 # base_lin_vel(3) + base_ang_vel(3) + projected_gravity(3) + velocity_commands(3) + 
 # joint_pos(12) + joint_vel(12) + actions(12) + height_scan(N) = 48 + N
 # For now, assuming height_scan is 56 (common in legged robots), total = 104
-num_obs: 104  # Will be updated based on actual height_scan size
+num_obs: 45  # Will be updated based on actual height_scan size
 
 cmd_init: [0, 0, 0]
 

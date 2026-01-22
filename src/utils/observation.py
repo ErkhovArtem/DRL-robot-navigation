@@ -18,32 +18,21 @@ def get_gravity_orientation(quaternion):
 
     return gravity_orientation
 
-
-def pd_control(target_q, q, kp, target_dq, dq, kd):
-    """Calculates torques from position commands"""
-    return (target_q - q) * kp + (target_dq - dq) * kd
-
-
 def build_walking_policy_observation(
-    base_lin_vel,      # [3] linear velocity in base frame
     base_ang_vel,      # [3] angular velocity in base frame
     projected_gravity, # [3] projected gravity vector
     velocity_commands, # [3] velocity commands (vx, vy, w)
     joint_pos,         # [num_actions] joint positions (relative to default)
     joint_vel,         # [num_actions] joint velocities
     last_action,       # [num_actions] last action from walking policy
-    height_scan=None,  # [N] height scan data (optional)
-    base_lin_vel_scale=1.0,
     base_ang_vel_scale=0.25,
     joint_pos_scale=1.0,
     joint_vel_scale=0.05,
-    height_scan_scale=1.0
 ):
     """
     Build observation for walking policy according to PolicyCfg structure.
     
     Observation order (matching PolicyCfg):
-    1. base_lin_vel (3) - linear velocity in base frame
     2. base_ang_vel (3) - angular velocity in base frame  
     3. projected_gravity (3) - projected gravity vector
     4. velocity_commands (3) - velocity commands (vx, vy, w)
@@ -56,10 +45,6 @@ def build_walking_policy_observation(
         observation array with proper scaling and clipping
     """
     obs_parts = []
-    
-    # 1. base_lin_vel (3) - clip and scale
-    base_lin_vel_scaled = np.clip(base_lin_vel * base_lin_vel_scale, -100.0, 100.0)
-    obs_parts.append(base_lin_vel_scaled)
     
     # 2. base_ang_vel (3) - clip and scale
     base_ang_vel_scaled = np.clip(base_ang_vel * base_ang_vel_scale, -100.0, 100.0)
@@ -84,16 +69,6 @@ def build_walking_policy_observation(
     # 7. actions (num_actions) - last action, clip
     last_action_clipped = np.clip(last_action, -100.0, 100.0)
     obs_parts.append(last_action_clipped)
-    
-    # 8. height_scan (N) - optional, clip and scale
-    if height_scan is not None:
-        height_scan_scaled = np.clip(height_scan * height_scan_scale, -1.0, 1.0)
-        obs_parts.append(height_scan_scaled)
-    else:
-        # If no height scan, use zeros (will need to be updated when height scanner is added)
-        # For now, use a default size of 56 (common in legged robots)
-        height_scan_default = np.zeros(56, dtype=np.float32)
-        obs_parts.append(height_scan_default)
     
     # Concatenate all parts
     observation = np.concatenate(obs_parts, dtype=np.float32)

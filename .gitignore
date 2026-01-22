@@ -9,7 +9,7 @@ dist/
 build/
 
 # Model files
-*.pt
+# *.pt
 *.pth
 *.pkl
 
