@@ -10,7 +10,7 @@ simulation_dt: 0.002
 control_decimation: 10
 # SAC policy update frequency (runs every N control cycles; 50Hz / sac_decimation = SAC frequency)
 # Example: sac_decimation=5 → SAC runs at 10Hz (50Hz / 5 = 10Hz)
-sac_decimation: 5
+sac_decimation: 10
 # Maximum steps per episode
 max_steps: 10000
 
@@ -33,7 +33,7 @@ dof_vel_scale: 0.05
 action_scales: [0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25]
 # Legacy single action_scale (for backward compatibility, but action_scales takes precedence)
 action_scale: 0.25
-cmd_scale: [1.0, 1.0, 0.35]
+cmd_scale: [1.0, 0.5, 0.35]
 num_actions: 12  # Number of robot DOF for walking policy
 # Observation dimension for walking policy based on PolicyCfg:
 # base_lin_vel(3) + base_ang_vel(3) + projected_gravity(3) + velocity_commands(3) + 
@@ -97,7 +97,7 @@ sac:
   # Training schedule - CONSERVATIVE (avoid overfitting)
   train_every_n: 1              # Train more frequently (was 2)
   training_iterations: 4        # MUCH SMALLER - avoid overfit (was 500!)
-  batch_size: 256               # SMALLER - more stable (was 1024)
+  batch_size: 512               # SMALLER - more stable (was 1024)
   min_buffer_size: 5000         # Larger buffer before training starts         
 
 # Reward weights - COLLISION AVOIDANCE FOCUSED
@@ -120,13 +120,17 @@ reward_weights:
   time_penalty: -0.02               # Lower time penalty (was -0.08) - don't rush
   
   # Penalties - DISCOURAGE BAD BEHAVIOR
-  vy_penalty: -0.3                  # Reduced - allow some lateral movement
+  vy_penalty: -1                  # Reduced - allow some lateral movement
   vx_backward_penalty: -1.0         # HIGHER - strongly discourage backward (was -0.5)
   w_penalty_weight: -0.5             # No penalty for turning (allow navigation)
   
   # Alignment - STRAIGHTNESS (for fine-tuning)
   velocity_alignment: 0.5           # Reward for moving "face forward" (0.0 = disabled)
   velocity_alignment_threshold: 0.1 # Minimum velocity to apply alignment reward (m/s)
+
+# LiDAR configuration
+lidar:
+  noise_std: 0.00  # Standard deviation of Gaussian noise in meters (e.g. 0.02 = 2cm)
 
 # Obstacle generator - progressive difficulty
 obstacle_generator:

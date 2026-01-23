@@ -221,7 +221,7 @@ curriculum:
         velocity_alignment: 2.0        # ВЫСОКАЯ награда за движение "лицом вперед"
         velocity_alignment_threshold: 0.05  # Более строгий порог (было 0.1)
         w_penalty_weight: -4
-        vy_penalty: -4               # Штраф за боковое движение (держим курс)
+        vy_penalty: -5               # Штраф за боковое движение (держим курс)
       
       sac:
         init_temperature: 0.8          # МАКСИМАЛЬНЫЙ - полностью deterministic policy

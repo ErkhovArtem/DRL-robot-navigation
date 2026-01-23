@@ -156,7 +156,7 @@ def initialize_batch_episodes_mjx(mjx_model, batch_size, spawn_generator, m,
 def extract_observations_from_batch(mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, 
                                    target_positions, prev_actions, max_lidar_range, max_vx, max_vy,
                                    max_angular_vel, max_distance, lidar_downsample_bins,
-                                   critic_critical_topk=0):
+                                   critic_critical_topk=0, lidar_noise_std=0.0):
     """
     Extract observations from batched MJX data.
     Returns critic observations: Actor(47) + vx(1) + vy(1) + topk = 49 + topk
@@ -174,6 +174,12 @@ def extract_observations_from_batch(mjx_data, lidar_sensor_ids, lidar_sensor_ang
         # Extract lidar data for this episode
         lidar_data_raw = sensordata_array[i, lidar_sensor_ids]
         lidar_data_raw = fix_negative_lidar_values(lidar_data_raw)
+        
+        # Add Gaussian noise if configured
+        if lidar_noise_std > 0:
+            noise = np.random.normal(0, lidar_noise_std, size=lidar_data_raw.shape).astype(np.float32)
+            lidar_data_raw = lidar_data_raw + noise
+            lidar_data_raw = np.clip(lidar_data_raw, 0.0, max_lidar_range)
         
         # Extract velocities (Vx, Vy, W)
         vx = float(qvel_array[i, 0])
@@ -210,7 +216,8 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
                                   agent, replay_buffer, m, lidar_sensor_ids, lidar_sensor_angles,
                                   target_body_id, target_mocap_id, reward_weights,
                                   config, args, max_steps=2000, train=True,
-                                  critic_critical_topk=0, critic_history_length=0):
+                                  critic_critical_topk=0, critic_history_length=0,
+                                  lidar_noise_std=0.0):
     """
     Run a full batch of parallel episodes using MJX and collect all experiences.
     
@@ -283,7 +290,7 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
     observations_init, robot_positions_init, robot_quats_init, distances_init = extract_observations_from_batch(
         mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, target_positions,
         prev_actions, max_lidar_range, max_vx, max_angular_vel, max_distance, lidar_downsample_bins,
-        critic_critical_topk=critic_critical_topk
+        critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std
     )
     prev_distances = distances_init.copy()
     # Replace any NaN/Inf with default value
@@ -325,7 +332,7 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
         observations_extended, robot_positions, robot_quats, distances = extract_observations_from_batch(
             mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, target_positions,
             prev_actions, max_lidar_range, max_vx, max_vy, max_angular_vel, max_distance, lidar_downsample_bins,
-            critic_critical_topk=critic_critical_topk
+            critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std
         )
         
         # Actor state dimension (47 features: lidar + w + sin + cos + dist + prev)
@@ -381,6 +388,12 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
             sensordata_array = np.array(mjx_data.sensordata)  # [batch_size, n_sensors]
             batch_lidar_data_raw = sensordata_array[active_indices][:, lidar_sensor_ids]  # [num_active, n_lidar]
             batch_lidar_data_raw = fix_negative_lidar_values(batch_lidar_data_raw)
+            
+            # Add Gaussian noise if configured
+            if lidar_noise_std > 0:
+                noise = np.random.normal(0, lidar_noise_std, size=batch_lidar_data_raw.shape).astype(np.float32)
+                batch_lidar_data_raw = batch_lidar_data_raw + noise
+                batch_lidar_data_raw = np.clip(batch_lidar_data_raw, 0.0, max_lidar_range)
             
             # Извлечь глобальную скорость для активных эпизодов
             qvel_array = np.array(mjx_data.qvel)  # [batch_size, nq]

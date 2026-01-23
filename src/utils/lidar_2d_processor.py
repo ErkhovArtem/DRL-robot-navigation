@@ -31,6 +31,7 @@ class Lidar2DProcessor(Node):
         self.declare_parameter('max_range', 3.0)  # максимальная дальность в метрах (соответствует обучению)
         self.declare_parameter('num_sectors', 40)  # количество секторов по кругу
         self.declare_parameter('obstacle_threshold', 0.37)  # порог детекции препятствий (метры)
+        self.declare_parameter('lidar_noise_std', 0.0)  # СКО гауссовского шума (метры)
         
         # Параметры топиков
         self.declare_parameter('lidar_topic', '/livox/lidar')  # Топик от livox_ros_driver2
@@ -44,6 +45,7 @@ class Lidar2DProcessor(Node):
         self.max_range = float(self.get_parameter('max_range').value)
         self.num_sectors = int(self.get_parameter('num_sectors').value)
         self.obstacle_threshold = float(self.get_parameter('obstacle_threshold').value)
+        self.lidar_noise_std = float(self.get_parameter('lidar_noise_std').value)
         
         lidar_topic = str(self.get_parameter('lidar_topic').value)
         floor_points_topic = str(self.get_parameter('floor_points_topic').value)
@@ -187,6 +189,12 @@ class Lidar2DProcessor(Node):
         range_mask = distances_2d >= self.min_range
         filtered_points = points[range_mask]
         filtered_distances = distances_2d[range_mask]
+        
+        # Добавляем гауссовский шум если настроен
+        if self.lidar_noise_std > 0:
+            noise = np.random.normal(0, self.lidar_noise_std, size=filtered_distances.shape).astype(np.float32)
+            filtered_distances = filtered_distances + noise
+            filtered_distances = np.clip(filtered_distances, 0.0, self.max_range)
         
         # Вычисляем углы для каждой точки
         angles = np.arctan2(filtered_points[:, 1], filtered_points[:, 0])

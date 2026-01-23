@@ -55,7 +55,7 @@ from policy.SAC.SAC import SAC
 from policy.replay_buffer import ReplayBuffer
 from utils.curriculum import CurriculumManager
 from utils.observation import (
-    get_gravity_orientation, pd_control, build_walking_policy_observation,
+    get_gravity_orientation, build_walking_policy_observation,
     downsample_lidar, fix_negative_lidar_values, compute_lidar_sensor_angles,
     process_lidar_to_sectors, build_actor_observation, build_critic_base_observation,
     build_critic_observation
@@ -184,6 +184,12 @@ if __name__ == "__main__":
     
     # Load reward weights from config
     reward_weights = config["reward_weights"]
+    
+    # Load lidar config
+    lidar_config = config.get("lidar", {})
+    lidar_noise_std = lidar_config.get("noise_std", 0.0)
+    if lidar_noise_std > 0:
+        print(f"Lidar noise enabled: std={lidar_noise_std}m")
     
     # Initialize Curriculum Manager
     curriculum_manager = None
@@ -767,7 +773,8 @@ if __name__ == "__main__":
                             max_steps=2000,
                             train=args.train,
                             critic_critical_topk=critic_critical_topk,
-                            critic_history_length=critic_history_length
+                            critic_history_length=critic_history_length,
+                            lidar_noise_std=lidar_noise_std
                         )
                         success = True
                         break  # Success, exit retry loop
@@ -1502,6 +1509,13 @@ if __name__ == "__main__":
                         # Fix negative values that can cause false collision detection
                         lidar_data_raw = fix_negative_lidar_values(lidar_data_raw)
                         
+                        # Add Gaussian noise if configured
+                        if lidar_noise_std > 0:
+                            noise = np.random.normal(0, lidar_noise_std, size=lidar_data_raw.shape).astype(np.float32)
+                            lidar_data_raw = lidar_data_raw + noise
+                            # Keep within valid range [0, max_lidar_range]
+                            lidar_data_raw = np.clip(lidar_data_raw, 0.0, max_lidar_range)
+                        
                         # Check for collision - use only MuJoCo contacts (more reliable than lidar)
                         # Lidar can show close objects but that's not necessarily a collision
                         collision_detected = False
@@ -1794,7 +1808,10 @@ if __name__ == "__main__":
                                     # Use act_inference() for deterministic inference (returns mean, not sampled)
                                     # act_inference() returns mean action directly
                                     action_tensor = walking_policy.act_inference(obs_tensor)  # Shape: [1, 12]
-                                    action = action_tensor.numpy().squeeze()  # Shape: [12]                                    
+                                    action = action_tensor.numpy().squeeze()  # Shape: [12]
+
+                                    if not args.headless:
+                                        time.sleep(0.02)                                    
                                     # Явно удаляем тензоры для освобождения памяти
                                     del obs_tensor, action_tensor
                                 target_dof_pos = action * action_scales + default_angles
@@ -1829,6 +1846,12 @@ if __name__ == "__main__":
                                 if len(lidar_sensor_ids) > 0:
                                     lidar_distances = d.sensordata[lidar_sensor_ids]
                                     lidar_distances = fix_negative_lidar_values(lidar_distances)
+                                    # Add Gaussian noise for visualization if configured
+                                    if lidar_noise_std > 0:
+                                        noise = np.random.normal(0, lidar_noise_std, size=lidar_distances.shape).astype(np.float32)
+                                        lidar_distances = lidar_distances + noise
+                                        lidar_distances = np.clip(lidar_distances, 0.0, max_lidar_range)
+                                    
                                     lidar_sectors = process_lidar_to_sectors(
                                         lidar_distances, lidar_sensor_angles,
                                         num_sectors=40, max_range=3.0, min_range=0.25
