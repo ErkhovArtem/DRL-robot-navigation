@@ -12,12 +12,13 @@ build/
 # *.pt
 *.pth
 *.pkl
+*.json
 
 # Data files
 data/buffer/*.npz
 data/models/*.pt
 data/models/*.pth
-data/runs/
+runs/
 
 # IDE
 .vscode/

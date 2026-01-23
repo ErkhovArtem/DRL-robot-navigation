@@ -29,8 +29,7 @@ import yaml
 import argparse
 from pathlib import Path
 import os
-import psutil
-import gc  # Для принудительной сборки мусора (исправление утечек памяти)
+from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 import time
 
@@ -67,9 +66,8 @@ from policy.walking_policy import load_walking_policy_from_checkpoint
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("config_file", type=str, help="config file name")
-    parser.add_argument("--train", action="store_true", help="train mode")
-    parser.add_argument("--test", action="store_true", help="test mode: run episodes without training and print statistics (requires --load_pretrained)")
-    parser.add_argument("--load_pretrained", action="store_true", help="whether to load pretrained model (required for --test)")
+    parser.add_argument("--train", action="store_true", help="train mode (if not specified, runs in test/evaluation mode)")
+    parser.add_argument("--load_pretrained", action="store_true", help="in training mode: load last checkpoint and continue training; ignored in test mode (test mode always loads latest checkpoint)")
     parser.add_argument("--fine_tune", action="store_true", help="fine-tuning mode: loads weights but resets entropy/buffer/optimizers")
     parser.add_argument("--log_dir", type=str, default="runs", help="tensorboard log dir")
     parser.add_argument("--sac_decimation", type=int, default=5, help="run SAC policy every N control cycles (on top of control_decimation)")
@@ -79,8 +77,6 @@ if __name__ == "__main__":
     parser.add_argument("--spawn_clearance", type=float, default=0.7, help="clearance from obstacles for spawn points (meters, accounts for robot radius)")
     parser.add_argument("--grid_step", type=float, default=0.1, help="grid step size for free space generation (meters)")
     parser.add_argument("--save_every_n", type=int, default=100, help="save model every N episodes")
-    parser.add_argument("--memory_check_every_n", type=int, default=50, help="check memory usage every N episodes")
-    parser.add_argument("--memory_threshold", type=float, default=0.90, help="stop training if memory usage exceeds this fraction (0.0-1.0)")
     parser.add_argument("--use_mjx", action="store_true", help="use MJX for parallel batched simulation (requires mujoco-mjx)")
     parser.add_argument("--batch_size", type=int, default=128, help="number of parallel environments for MJX (only used with --use_mjx)")
     args = parser.parse_args()
@@ -422,20 +418,61 @@ if __name__ == "__main__":
     # Для совместимости используем actor_state_dim как state_dim (актор всегда получает первые actor_state_dim признаков)
     state_dim = actor_state_dim
 
-    model_dir = PROJECT_ROOT / "data" / "models"
+    # Base directory for models
+    base_models_dir = PROJECT_ROOT / "data" / "models"
+    base_models_dir.mkdir(parents=True, exist_ok=True)
+    
     model_name = "sac"
     buffer_dir = PROJECT_ROOT / "data" / "buffer"
-    
-    # Create model and buffer directories if they don't exist
-    model_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create buffer directory if it doesn't exist
     buffer_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Function to find the latest checkpoint directory
+    def find_latest_checkpoint_dir(base_dir):
+        """Find the most recent checkpoint directory based on modification time."""
+        if not base_dir.exists():
+            return None
+        
+        # Get all subdirectories
+        subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
+        if not subdirs:
+            return None
+        
+        # Sort by modification time (most recent first)
+        subdirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        return subdirs[0]
+    
+    # Determine model directory based on mode
+    # Note: Directory is NOT created here - it will be created only when saving models
+    if args.train:
+        # Training mode
+        if args.load_pretrained:
+            # Load from latest checkpoint and continue training in the same directory
+            latest_dir = find_latest_checkpoint_dir(base_models_dir)
+            if latest_dir:
+                model_dir = latest_dir
+                print(f"Resuming training in existing directory: {model_dir}")
+            else:
+                # No checkpoint found, will create new directory on first save
+                model_dir = base_models_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
+                print(f"No existing checkpoint found. Will create directory on first save: {model_dir}")
+        else:
+            # Start fresh training, will create new directory on first save
+            model_dir = base_models_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
+            print(f"Starting new training. Will create directory on first save: {model_dir}")
+    else:
+        # Test mode: always try to load from latest checkpoint
+        latest_dir = find_latest_checkpoint_dir(base_models_dir)
+        if latest_dir:
+            model_dir = latest_dir
+            print(f"Test mode: Loading from latest checkpoint directory: {model_dir}")
+        else:
+            # No checkpoint found, don't create directory (test mode doesn't save models)
+            model_dir = None
+            print(f"Test mode: No checkpoint found. Will initialize new model (no directory created)")
     
     # Initialize TensorBoard for logging (with unique subdirectory for each run)
     base_log_dir = Path(args.log_dir) if args.log_dir.startswith("/") else PROJECT_ROOT / "data" / args.log_dir
     # Create unique subdirectory for each run
-    from datetime import datetime
     try:
         hostname = os.uname().nodename
     except (AttributeError, OSError):
@@ -518,7 +555,17 @@ if __name__ == "__main__":
 
     episode = 0
     agent.reset_history()
-    if args.load_pretrained or args.fine_tune:
+    
+    # Load model logic based on mode
+    should_load_model = False
+    if args.train:
+        # Training mode: only load if --load_pretrained is specified
+        should_load_model = args.load_pretrained or args.fine_tune
+    else:
+        # Test mode: always try to load from latest checkpoint (ignore --load_pretrained flag)
+        should_load_model = True
+    
+    if should_load_model:
         # Check if using A1 config and load from pre_train path
         policy_path = config.get("policy_path", "")
         if "a1" in policy_path.lower() or "a1" in str(config_path).lower():
@@ -552,60 +599,75 @@ if __name__ == "__main__":
                 print("Continuing with random initialization...")
         
         # ПРОВЕРКА: совпадает ли размерность загружаемой модели с текущей
-        model_path = model_dir / f"{model_name}_actor.pth"
-        if model_path.exists():
-            try:
-                import torch
-                loaded_state = torch.load(model_path, map_location='cpu')
-                loaded_obs_dim = loaded_state['trunk.0.weight'].shape[1]
-                
-                # Вычисляем ожидаемую stacked dimension
-                expected_stacked_dim = actor_state_dim + history_length * 3
-                
-                if loaded_obs_dim != expected_stacked_dim:
-                    # Определяем что за модель загружается
-                    print(f"\n⚠️ ВНИМАНИЕ: Размерность загружаемой модели ({loaded_obs_dim}) не совпадает с текущей ({expected_stacked_dim})!")
-                    print(f"  Загружаемая модель: {loaded_obs_dim} признаков")
-                    print(f"  Текущая конфигурация: {expected_stacked_dim} признаков (base {actor_state_dim} + history {history_length * 3})")
+        # Skip if model_dir is None (test mode without checkpoint)
+        if model_dir is not None:
+            model_path = model_dir / f"{model_name}_actor.pth"
+            if model_path.exists():
+                try:
+                    import torch
+                    loaded_state = torch.load(model_path, map_location='cpu')
+                    loaded_obs_dim = loaded_state['trunk.0.weight'].shape[1]
                     
-                    # Определяем тип загружаемой модели
-                    if loaded_obs_dim == 48:
-                        print(f"  ⚠️ Загружается СТАРАЯ модель (48 признаков: lidar(40) + vx(1) + w(1) + sin(1) + cos(1) + dist(1) + prev(3))")
-                        print(f"  ⚠️ Текущий код ожидает: base(47) + history({history_length * 3}) = {expected_stacked_dim}")
-                    elif loaded_obs_dim == 47:
-                        print(f"  ⚠️ Загружается модель без истории (47 признаков: base только)")
+                    # Вычисляем ожидаемую stacked dimension
+                    expected_stacked_dim = actor_state_dim + history_length * 3
+                    
+                    if loaded_obs_dim != expected_stacked_dim:
+                        # Определяем что за модель загружается
+                        print(f"\n⚠️ ВНИМАНИЕ: Размерность загружаемой модели ({loaded_obs_dim}) не совпадает с текущей ({expected_stacked_dim})!")
+                        print(f"  Загружаемая модель: {loaded_obs_dim} признаков")
+                        print(f"  Текущая конфигурация: {expected_stacked_dim} признаков (base {actor_state_dim} + history {history_length * 3})")
+                        
+                        # Определяем тип загружаемой модели
+                        if loaded_obs_dim == 48:
+                            print(f"  ⚠️ Загружается СТАРАЯ модель (48 признаков: lidar(40) + vx(1) + w(1) + sin(1) + cos(1) + dist(1) + prev(3))")
+                            print(f"  ⚠️ Текущий код ожидает: base(47) + history({history_length * 3}) = {expected_stacked_dim}")
+                        elif loaded_obs_dim == 47:
+                            print(f"  ⚠️ Загружается модель без истории (47 признаков: base только)")
+                            if history_length > 0:
+                                print(f"  ⚠️ Текущий код ожидает модель С историей: base(47) + history({history_length * 3}) = {expected_stacked_dim}")
+                        elif loaded_obs_dim > 47 and (loaded_obs_dim - 47) % 3 == 0:
+                            # Модель с историей, но другой длины
+                            loaded_history_length = (loaded_obs_dim - 47) // 3
+                            print(f"  ⚠️ Загружается модель с историей действий (base 47 + history {loaded_history_length} * 3 = {loaded_obs_dim})")
+                            print(f"  ⚠️ Текущий код ожидает: base(47) + history({history_length} * 3) = {expected_stacked_dim}")
+                        else:
+                            print(f"  ⚠️ Неожиданная размерность: {loaded_obs_dim}")
+                        
+                        print(f"  ⚠️ Модель будет загружена, но поведение может быть непредсказуемым!")
+                        print()
+                    else:
+                        # Размерности совпадают - все хорошо
                         if history_length > 0:
-                            print(f"  ⚠️ Текущий код ожидает модель С историей: base(47) + history({history_length * 3}) = {expected_stacked_dim}")
-                    elif loaded_obs_dim > 47 and (loaded_obs_dim - 47) % 3 == 0:
-                        # Модель с историей, но другой длины
-                        loaded_history_length = (loaded_obs_dim - 47) // 3
-                        print(f"  ⚠️ Загружается модель с историей действий (base 47 + history {loaded_history_length} * 3 = {loaded_obs_dim})")
-                        print(f"  ⚠️ Текущий код ожидает: base(47) + history({history_length} * 3) = {expected_stacked_dim}")
-                    else:
-                        print(f"  ⚠️ Неожиданная размерность: {loaded_obs_dim}")
-                    
-                    print(f"  ⚠️ Модель будет загружена, но поведение может быть непредсказуемым!")
-                    print()
-                else:
-                    # Размерности совпадают - все хорошо
-                    if history_length > 0:
-                        print(f"\n✓ Загружается модель с историей действий: {loaded_obs_dim} признаков (base {actor_state_dim} + history {history_length * 3})")
-                    else:
-                        print(f"\n✓ Загружается модель без истории: {loaded_obs_dim} признаков (base только)")
-            except Exception as e:
-                print(f"⚠️ Не удалось проверить размерность модели: {e}")
+                            print(f"\n✓ Загружается модель с историей действий: {loaded_obs_dim} признаков (base {actor_state_dim} + history {history_length * 3})")
+                        else:
+                            print(f"\n✓ Загружается модель без истории: {loaded_obs_dim} признаков (base только)")
+                except Exception as e:
+                    print(f"⚠️ Не удалось проверить размерность модели: {e}")
         
-        metadata = agent.load(
-            filename=model_name,
-            directory=model_dir,
-            fine_tune=args.fine_tune
-        )
-        # Restore episode number from metadata if available (unless fine-tuning)
-        if not args.fine_tune and metadata is not None and 'episode' in metadata:
-            episode = metadata['episode']
-            print(f"Resumed training from episode {episode}")
-        elif args.fine_tune:
-            print("--- Fine-tuning mode active: Weights loaded, but resetting Alpha and Buffer ---")
+        # Only try to load if model_dir is set (skip in test mode without checkpoint)
+        if model_dir is not None:
+            metadata = agent.load(
+                filename=model_name,
+                directory=model_dir,
+                fine_tune=args.fine_tune if args.train else False
+            )
+            # Restore episode number from metadata if available (unless fine-tuning or test mode)
+            if args.train:
+                if not args.fine_tune and metadata is not None and 'episode' in metadata:
+                    episode = metadata['episode']
+                    print(f"Resumed training from episode {episode}")
+                elif args.fine_tune:
+                    print("--- Fine-tuning mode active: Weights loaded, but resetting Alpha and Buffer ---")
+            else:
+                # Test mode
+                if metadata is not None and 'episode' in metadata:
+                    print(f"Loaded model from episode {metadata['episode']}")
+                else:
+                    print("No checkpoint found in directory, model initialized from scratch")
+        else:
+            # Test mode without checkpoint directory
+            metadata = None
+            print("Test mode: No checkpoint directory found, model initialized from scratch")
     max_episode = episode + args.episodes
     
     # Track success rate over last 100 episodes
@@ -615,15 +677,15 @@ if __name__ == "__main__":
     success_rate_window = 100
     
     # For test mode, collect all statistics (not just last 100)
-    test_episode_successes = [] if args.test else None
-    test_episode_collisions = [] if args.test else None
-    test_episode_timeouts = [] if args.test else None
+    test_episode_successes = [] if not args.train else None
+    test_episode_collisions = [] if not args.train else None
+    test_episode_timeouts = [] if not args.train else None
     
     # Initialize replay buffer
     replay_buffer = ReplayBuffer(buffer_size=7e5, random_seed=69)
     
-    # Try to load buffer if both --train and (--load_pretrained or --fine_tune) are specified
-    if args.train and (args.load_pretrained or args.fine_tune):
+    # Try to load buffer if in training mode with --load_pretrained or --fine_tune
+    if args.train and should_load_model:
         if args.fresh_buffer or args.fine_tune:
             print("--- Fine-tuning with a FRESH replay buffer as requested ---")
         else:
@@ -816,7 +878,7 @@ if __name__ == "__main__":
                         # Determine if episode was successful
                         episode_successful = result.get('done', False) and result.get('reward', 0) > 0
                         episode_successes.append(episode_successful)
-                    if args.test:
+                    if not args.train:
                         # For test mode, also collect statistics
                         episode_successful = result.get('done', False) and result.get('reward', 0) > 0
                         test_episode_successes.append(episode_successful)
@@ -892,8 +954,11 @@ if __name__ == "__main__":
                                 collision_weight=collision_weight
                             )
                         
-                        # Save periodically
-                        if episode_idx % args.save_every_n == 0 and episode_idx > 0:
+                        # Save periodically (only in training mode)
+                        if args.train and episode_idx % args.save_every_n == 0 and episode_idx > 0:
+                            # Create directory if it doesn't exist (lazy creation)
+                            if model_dir is not None:
+                                model_dir.mkdir(parents=True, exist_ok=True)
                             metadata = {'episode': episode_idx}
                             agent.save(
                                 filename=model_name,
@@ -919,23 +984,6 @@ if __name__ == "__main__":
                 else:
                     print(f"⚠️  Skipping batch {batch_idx + 1} due to failures.")
                     break  # Exit batch loop if we can't proceed
-                
-                # Check memory and clear GPU cache
-                if episode % args.memory_check_every_n == 0 and episode > 0:
-                    process = psutil.Process(os.getpid())
-                    memory_percent = process.memory_percent()
-                    
-                    # Очистка GPU кеша для предотвращения утечки памяти
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()  # Очистка неиспользуемой GPU памяти
-                    
-                    # Очистка JAX кеша (если используется MJX)
-                    if use_mjx:
-                        gc.collect()  # Принудительная сборка мусора Python
-                    
-                    if memory_percent / 100.0 >= args.memory_threshold:
-                        print(f"\n⚠️  Memory threshold exceeded ({memory_percent:.1f}%)")
-                        break
             
             print("\n=== MJX Batched Training Complete ===")
         
@@ -1973,7 +2021,7 @@ if __name__ == "__main__":
                 episode_timeouts.append(episode_ended_by_timeout)
                 
                 # For test mode, also store in full statistics
-                if args.test:
+                if not args.train:
                     test_episode_successes.append(episode_successful)
                     test_episode_collisions.append(episode_ended_by_collision)
                     test_episode_timeouts.append(episode_ended_by_timeout)
@@ -2077,7 +2125,10 @@ if __name__ == "__main__":
                     print(f"Steps: {step_count}")
                     print("=" * 40)
                     
-                    if episode % args.save_every_n == 0 and episode > 0:
+                    if args.train and episode % args.save_every_n == 0 and episode > 0:
+                        # Create directory if it doesn't exist (lazy creation)
+                        if model_dir is not None:
+                            model_dir.mkdir(parents=True, exist_ok=True)
                         # Save model with metadata (episode number)
                         metadata = {'episode': episode}
                         agent.save(
@@ -2110,29 +2161,6 @@ if __name__ == "__main__":
                         writer.add_scalar("episode/timeout_rate", timeout_rate, episode)
                         writer.add_scalar("episode/steps", step_count, episode)
                 
-                # Periodic memory usage check and GPU cache clearing (fix memory leak)
-                if episode % args.memory_check_every_n == 0 and episode > 0:
-                    process = psutil.Process(os.getpid())
-                    memory_info = process.memory_info()
-                    memory_percent = process.memory_percent()
-                    memory_gb = memory_info.rss / (1024 ** 3)  # Convert to GB
-                    
-                    # Очистка GPU кеша для предотвращения утечки памяти
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()  # Очистка неиспользуемой GPU памяти
-                    
-                    # Очистка JAX кеша (принудительная сборка мусора Python)
-                    gc.collect()
-                    
-                    # Check if memory threshold is exceeded
-                    if memory_percent / 100.0 >= args.memory_threshold:
-                        print(f"\n⚠️  WARNING: Memory usage ({memory_percent:.1f}%) exceeds threshold ({args.memory_threshold*100:.1f}%)")
-                        print("Saving model and buffer before stopping...")
-                        
-                        print(f"\nTraining stopped at episode {episode} due to high memory usage.")
-                        print(f"To resume training, use --load_pretrained flag.")
-                        break  # Exit episode loop
-                
                 episode += 1
     finally:
         # Clean up viewer if it was created (with safe error handling)
@@ -2149,7 +2177,7 @@ if __name__ == "__main__":
         writer.close()
     
     # Print test statistics if in test mode
-    if args.test:
+    if not args.train:
         print("\n" + "=" * 60)
         print("TEST RESULTS")
         print("=" * 60)
@@ -2188,6 +2216,9 @@ if __name__ == "__main__":
         print("=" * 60 + "\n")
     
     if args.train:
+        # Create directory if it doesn't exist (lazy creation)
+        if model_dir is not None:
+            model_dir.mkdir(parents=True, exist_ok=True)
         # Save model with metadata (episode number) at the end
         metadata = {'episode': episode}
         agent.save(

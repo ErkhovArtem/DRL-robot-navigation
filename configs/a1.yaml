@@ -130,7 +130,7 @@ reward_weights:
 
 # LiDAR configuration
 lidar:
-  noise_std: 0.00  # Standard deviation of Gaussian noise in meters (e.g. 0.02 = 2cm)
+  noise_std: 0.02  # Standard deviation of Gaussian noise in meters (e.g. 0.02 = 2cm)
 
 # Obstacle generator - progressive difficulty
 obstacle_generator:
