@@ -417,11 +417,13 @@ def compute_reward_reference_vectorized(robot_pos, target_pos, lidar_data, actio
     
     # W penalty: w_weight уже содержит знак (отрицательный = штраф)
     # Формула: w_weight * |w|, где w_weight отрицательный = штраф за повороты
+    # TEMPORARILY DISABLED: w_penalty disabled for training experiment
     w_penalty = w_weight * np.abs(w)
     reward_info['w_penalty'] = w_penalty
     
     # Main formula: vx reward + progress - penalties
-    rewards = vx + progress_reward + w_penalty + obstacle_penalty + vx_backward_penalty - time_penalty
+    # TEMPORARILY DISABLED: w_penalty removed from reward calculation
+    rewards = vx + progress_reward + obstacle_penalty + vx_backward_penalty - time_penalty  # w_penalty removed
     
     # Override for goal and collision
     rewards = np.where(goal, 100.0 - time_penalty, rewards)

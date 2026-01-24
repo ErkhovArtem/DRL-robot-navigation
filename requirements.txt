@@ -12,6 +12,9 @@ mujoco>=3.0.0
 # TensorBoard for logging
 tensorboard>=2.7.0
 
+# RSL-RL (ActorCritic used by walking_policy)
+rsl-rl-lib
+
 # JAX for MJX (required if using mujoco-mjx)
 # jax>=0.4.0
 # jaxlib>=0.4.0

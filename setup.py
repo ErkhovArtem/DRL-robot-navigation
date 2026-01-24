@@ -27,6 +27,8 @@ setup(
         "pyyaml>=5.4.1",
         "mujoco>=3.0.0",
         "tensorboard>=2.7.0",
+        # Walking policy (IsaacLab-style) ActorCritic implementation
+        "rsl-rl-lib",
     ],
     extras_require={
         "mjx": [

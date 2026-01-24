@@ -122,7 +122,7 @@ reward_weights:
   # Penalties - DISCOURAGE BAD BEHAVIOR
   vy_penalty: -1                  # Reduced - allow some lateral movement
   vx_backward_penalty: -1.0         # HIGHER - strongly discourage backward (was -0.5)
-  w_penalty_weight: -0.5             # No penalty for turning (allow navigation)
+  w_penalty_weight: 0.0               # TEMPORARILY DISABLED: angular velocity penalty disabled for training experiment
   
   # Alignment - STRAIGHTNESS (for fine-tuning)
   velocity_alignment: 0.5           # Reward for moving "face forward" (0.0 = disabled)

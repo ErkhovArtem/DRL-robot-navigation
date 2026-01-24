@@ -57,7 +57,13 @@ Dog_PathPlanning/
 ### Training
 
 ```bash
-python scripts/train.py configs/a1.yaml --train --headless
+python scripts/train.py configs/a1.yaml --train --headless --episodes 10000 # add --load_pretrained to continue from last checkpoint
+```
+
+### Inference trained policy
+
+```bash
+python scripts/train.py configs/a1.yaml
 ```
 
 ### Export to ONNX
