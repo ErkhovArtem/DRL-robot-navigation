@@ -22,13 +22,12 @@ setup(
     package_dir={"": "src"},
     python_requires=">=3.8",
     install_requires=[
-        "numpy>=1.21.0",
-        "torch>=1.9.0",
+        "numpy==1.24.3",
+        "torch==2.4.1",
         "pyyaml>=5.4.1",
-        "mujoco>=3.0.0",
+        "mujoco==3.2.3",
         "tensorboard>=2.7.0",
-        # Walking policy (IsaacLab-style) ActorCritic implementation
-        "rsl-rl-lib",
+        "rsl-rl-lib==2.3.3",
     ],
     extras_require={
         "mjx": [

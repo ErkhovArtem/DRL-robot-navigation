@@ -123,7 +123,7 @@ if __name__ == "__main__":
         print(f"Curriculum config not found at {curriculum_path}. Curriculum learning disabled.")
     
     # Resolve paths relative to project root
-    policy_path = str(PROJECT_ROOT / config["policy_path"])
+    walking_policy_path = str(PROJECT_ROOT / config.get("walking_policy_path", ""))
     xml_path = str(PROJECT_ROOT / config["xml_path"])
     
     # Get spawn parameters from config (with command-line override)
@@ -566,38 +566,6 @@ if __name__ == "__main__":
         should_load_model = True
     
     if should_load_model:
-        # Check if using A1 config and load from pre_train path
-        policy_path = config.get("policy_path", "")
-        if "a1" in policy_path.lower() or "a1" in str(config_path).lower():
-            # Use A1 pretrained weights
-            a1_model_path = PROJECT_ROOT / "pre_train" / "a1" / "model_4999.pt"
-            if a1_model_path.exists():
-                print(f"Loading A1 actor weights from: {a1_model_path}")
-                try:
-                    import torch
-                    # Try to load as checkpoint or state dict
-                    loaded_data = torch.load(a1_model_path, map_location='cpu')
-                    if isinstance(loaded_data, dict):
-                        # Check if it's a checkpoint with 'actor' key or direct state dict
-                        if 'actor' in loaded_data:
-                            agent.actor.load_state_dict(loaded_data['actor'])
-                            print("✓ Loaded A1 actor weights from checkpoint")
-                        elif 'state_dict' in loaded_data:
-                            agent.actor.load_state_dict(loaded_data['state_dict'])
-                            print("✓ Loaded A1 actor weights from state_dict")
-                        else:
-                            # Assume it's a direct state dict
-                            agent.actor.load_state_dict(loaded_data)
-                            print("✓ Loaded A1 actor weights (direct state dict)")
-                    else:
-                        print("⚠️ A1 model file format not recognized, skipping weight loading")
-                except Exception as e:
-                    print(f"⚠️ Failed to load A1 actor weights: {e}")
-                    print("Continuing with random initialization...")
-            else:
-                print(f"⚠️ A1 pretrained model not found at: {a1_model_path}")
-                print("Continuing with random initialization...")
-        
         # ПРОВЕРКА: совпадает ли размерность загружаемой модели с текущей
         # Skip if model_dir is None (test mode without checkpoint)
         if model_dir is not None:
@@ -644,8 +612,6 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"⚠️ Не удалось проверить размерность модели: {e}")
         
-        # Only try to load if model_dir is set (skip in test mode without checkpoint)
-        if model_dir is not None:
             metadata = agent.load(
                 filename=model_name,
                 directory=model_dir,
@@ -695,24 +661,29 @@ if __name__ == "__main__":
             else:
                 print("Could not load replay buffer, starting with empty buffer")
     
-    # Load walking policy (MLP policy for Unitree A1)
-    walking_policy = None
-    if os.path.exists(policy_path):
+    # Load walking policy (rsl_rl ActorCritic for Unitree A1 locomotion)
+    # This is separate from the SAC path planning policy
+    walking_policy_model = None
+    if walking_policy_path and os.path.exists(walking_policy_path):
         try:
-            print(f"Loading walking policy from checkpoint: {policy_path}")
-            walking_policy = load_walking_policy_from_checkpoint(
-                checkpoint_path=policy_path,
+            print(f"Loading walking policy (locomotion) from checkpoint: {walking_policy_path}")
+            walking_policy_model = load_walking_policy_from_checkpoint(
+                checkpoint_path=walking_policy_path,
                 obs_dim=num_obs,  # 45 for Unitree A1
                 action_dim=num_actions  # 12 for Unitree A1
             )
+            print("✓ Walking policy (locomotion) loaded successfully")
         except Exception as e:
-            print(f"⚠️ Failed to load walking policy from {policy_path}: {e}")
+            print(f"⚠️ Failed to load walking policy from {walking_policy_path}: {e}")
             print("Continuing without walking policy (robot will use default angles)...")
-            walking_policy = None
+            walking_policy_model = None
     else:
-        print(f"⚠️ Walking policy file not found at {policy_path}")
+        if walking_policy_path:
+            print(f"⚠️ Walking policy file not found at {walking_policy_path}")
+        else:
+            print("⚠️ No walking_policy_path specified in config")
         print("Continuing without walking policy (robot will use default angles)...")
-        walking_policy = None
+        walking_policy_model = None
     
     # Find robot body IDs once at initialization (for collision detection)
     robot_body_ids = set()
@@ -1840,8 +1811,9 @@ if __name__ == "__main__":
                         else:
                             obs = obs_new
                         
-                        # Walking policy inference (rsl_rl ActorCritic)
-                        if walking_policy is None:
+                        # Walking policy (locomotion) inference (rsl_rl ActorCritic)
+                        # This generates joint angles for robot locomotion, separate from SAC path planning policy
+                        if walking_policy_model is None:
                             # If no walking policy, use default angles (robot will stand still)
                             # This allows training to continue even without a walking policy
                             target_dof_pos = default_angles.copy()
@@ -1855,7 +1827,7 @@ if __name__ == "__main__":
                                     
                                     # Use act_inference() for deterministic inference (returns mean, not sampled)
                                     # act_inference() returns mean action directly
-                                    action_tensor = walking_policy.act_inference(obs_tensor)  # Shape: [1, 12]
+                                    action_tensor = walking_policy_model.act_inference(obs_tensor)  # Shape: [1, 12]
                                     action = action_tensor.numpy().squeeze()  # Shape: [12]
 
                                     if not args.headless:
@@ -1864,7 +1836,7 @@ if __name__ == "__main__":
                                     del obs_tensor, action_tensor
                                 target_dof_pos = action * action_scales + default_angles
                             except Exception as e:
-                                print(f"ERROR: Walking policy inference failed: {e}")
+                                print(f"ERROR: Walking policy (locomotion) inference failed: {e}")
                                 print("This may indicate model corruption or memory issues. Ending episode.")
                                 done = True
                                 break

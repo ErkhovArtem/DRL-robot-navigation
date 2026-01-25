@@ -1,5 +1,5 @@
 # A1 Robot Configuration
-policy_path: "data/walking_policy/model_4999.pt"
+walking_policy_path: "data/walking_policy/model_4999.pt"
 xml_path: "assets/unitree_a1/scene.xml"
 
 # Total simulation time
