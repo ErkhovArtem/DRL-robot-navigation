@@ -10,9 +10,9 @@ build/
 
 # Model files
 # *.pt
-*.pth
-*.pkl
-*.json
+# *.pth
+# *.pkl
+# *.json
 
 # Data files
 data/buffer/*.npz
