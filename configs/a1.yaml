@@ -131,6 +131,8 @@ reward_weights:
 # LiDAR configuration
 lidar:
   noise_std: 0.02  # Standard deviation of Gaussian noise in meters (e.g. 0.02 = 2cm)
+  offset_x: 0.12   # Distance from robot center to lidar (m) - for transform to center frame
+  offset_y: 0.0    # Lateral offset (m), typically 0
 
 # Obstacle generator - progressive difficulty
 obstacle_generator:

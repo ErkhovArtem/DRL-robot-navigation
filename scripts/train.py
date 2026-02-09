@@ -56,7 +56,8 @@ from utils.curriculum import CurriculumManager
 from utils.observation import (
     get_gravity_orientation, build_walking_policy_observation,
     downsample_lidar, fix_negative_lidar_values, compute_lidar_sensor_angles,
-    process_lidar_to_sectors, build_actor_observation, build_critic_base_observation,
+    process_lidar_to_sectors, transform_lidar_to_center_frame,
+    build_actor_observation, build_critic_base_observation,
     build_critic_observation
 )
 from utils.mjx_utils import create_mjx_batched_step_fn, run_batched_episodes_mjx_full, MJX_AVAILABLE
@@ -184,8 +185,11 @@ if __name__ == "__main__":
     # Load lidar config
     lidar_config = config.get("lidar", {})
     lidar_noise_std = lidar_config.get("noise_std", 0.0)
+    lidar_offset_x = lidar_config.get("offset_x", 0.12)
+    lidar_offset_y = lidar_config.get("offset_y", 0.0)
     if lidar_noise_std > 0:
         print(f"Lidar noise enabled: std={lidar_noise_std}m")
+    print(f"Lidar offset: ({lidar_offset_x}m, {lidar_offset_y}m) - transform to center frame enabled")
     
     # Initialize Curriculum Manager
     curriculum_manager = None
@@ -1535,24 +1539,25 @@ if __name__ == "__main__":
                             # Keep within valid range [0, max_lidar_range]
                             lidar_data_raw = np.clip(lidar_data_raw, 0.0, max_lidar_range)
                         
-                        # Check for collision - use only MuJoCo contacts (more reliable than lidar)
-                        # Lidar can show close objects but that's not necessarily a collision
+                        # Check for collision - use lidar transformed to center frame
                         collision_detected = False
                         spawn_grace_period = 100  # Don't check collisions in first N control steps (allow robot to stabilize)
                         
-                        # Initialize min_lidar to avoid NameError
-                        min_lidar = np.min(lidar_data_raw) if len(lidar_data_raw) > 0 else 10.0
+                        # Collision detection: transform lidar to center frame, then check min distance
+                        lidar_sectors_raw = process_lidar_to_sectors(
+                            lidar_data_raw, lidar_sensor_angles,
+                            num_sectors=lidar_downsample_bins, max_range=max_lidar_range, min_range=0.25
+                        )
+                        lidar_sectors_center = transform_lidar_to_center_frame(
+                            lidar_sectors_raw, lidar_sensor_angles,
+                            lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+                            max_range=max_lidar_range, min_range=0.25
+                        )
+                        min_lidar = np.min(lidar_sectors_center) if len(lidar_sectors_center) > 0 else 10.0
                         
-                        # УПРОЩЕННАЯ детекция коллизий ТОЛЬКО через лидар (не используем MuJoCo contacts)
-                        # Физические коллизии в MJX все равно вычисляются для корректной физики,
-                        # но мы их не проверяем явно - используем только лидар для определения коллизий
-                        # Это упрощает код и снижает требования к памяти при MJX параллелизации
                         if step_count > spawn_grace_period:
-                            min_lidar = np.min(lidar_data_raw) if len(lidar_data_raw) > 0 else 10.0
-                            
-                            # Простая проверка: очень близко к препятствию = коллизия
-                            # Порог 0.35 метра - достаточно для детекции реальных столкновений
-                            if min_lidar < 0.35:
+                            collision_threshold = reward_weights.get('collision_threshold', 0.35)
+                            if min_lidar < collision_threshold:
                                 collision_detected = True
                         
                         # Update cached lidar data at SAC frequency for observations
@@ -1603,7 +1608,8 @@ if __name__ == "__main__":
                                     lidar_downsample_bins,
                                     use_sector_processing=True,
                                     use_extended_features=False,
-                                    critical_topk=critic_critical_topk
+                                    critical_topk=critic_critical_topk,
+                                    lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
                                 )
                                 # IMPORTANT: Use build_observation_from_history instead of process_observation
                                 # to avoid corrupting history when collision happens between SAC steps
@@ -1636,7 +1642,8 @@ if __name__ == "__main__":
                                 sin_angle, cos_angle, max_lidar_range, max_angular_vel,
                                 max_distance, prev_action_np,
                                 lidar_downsample_bins,
-                                use_sector_processing=True
+                                use_sector_processing=True,
+                                lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
                             )
                             
                             # Critic: Actor(47) + vx(1) + vy(1) = 49, плюс история и critical_topk
@@ -1647,7 +1654,8 @@ if __name__ == "__main__":
                                 lidar_downsample_bins,
                                 use_sector_processing=True,
                                 use_extended_features=False,
-                                critical_topk=critic_critical_topk
+                                critical_topk=critic_critical_topk,
+                                lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
                             )
                             
                             # Process observations separately:
@@ -1697,18 +1705,24 @@ if __name__ == "__main__":
                             cmd[2] = yaw_rate_cmd
                             
                             # REWARD CALCULATION (Reference Style)
-                            # IMPORTANT: Use raw lidar data (in meters) for reward calculation
-                            # Reward function expects lidar in meters, not normalized
+                            # Use lidar transformed to center frame (same as collision detection)
+                            cached_lidar_sectors = process_lidar_to_sectors(
+                                cached_lidar_data_raw, lidar_sensor_angles,
+                                num_sectors=lidar_downsample_bins, max_range=max_lidar_range, min_range=0.25
+                            )
+                            cached_lidar_sectors_center = transform_lidar_to_center_frame(
+                                cached_lidar_sectors, lidar_sensor_angles,
+                                lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+                                max_range=max_lidar_range, min_range=0.25
+                            )
                             goal = distance < 0.25 # reached_threshold
-                            # Collision detection: check if any lidar reading is very close (< 0.35m)
-                            # Filter out invalid values before checking
-                            valid_lidar = cached_lidar_data_raw[(cached_lidar_data_raw >= 0) & np.isfinite(cached_lidar_data_raw)]
-                            collision = len(valid_lidar) > 0 and np.min(valid_lidar) < 0.35
+                            collision_threshold = reward_weights.get('collision_threshold', 0.35)
+                            collision = np.min(cached_lidar_sectors_center) < collision_threshold
                             
                             reward, done, reward_info = compute_reward_reference(
                                 robot_pos=robot_pos,
                                 target_pos=target_pos,
-                                lidar_data=cached_lidar_data_raw,  # Raw lidar in meters (not normalized)
+                                lidar_data=cached_lidar_sectors_center,  # Center-frame lidar (meters)
                                 actions=prev_action_np,
                                 goal=goal,
                                 collision=collision,

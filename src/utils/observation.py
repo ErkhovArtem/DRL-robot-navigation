@@ -287,15 +287,73 @@ def process_lidar_to_sectors(lidar_data, sensor_angles, num_sectors=40, max_rang
     return sector_distances
 
 
+def transform_lidar_to_center_frame(lidar_sectors, sensor_angles, lidar_offset_x=0.12, lidar_offset_y=0.0,
+                                    max_range=3.0, min_range=0.25):
+    """
+    Пересчитывает расстояния лидара так, как будто лидар расположен в центре робота.
+    
+    Для каждого луча: точка препятствия P = (d*cos(α), d*sin(α)) в frame лидара.
+    Центр робота в frame лидара: C = (-lidar_offset_x, -lidar_offset_y).
+    Расстояние от центра до препятствия: d_center = sqrt((d*cos(α)+Lx)² + (d*sin(α)+Ly)²).
+    
+    Args:
+        lidar_sectors: numpy array [n_sectors] или [batch_size, n_sectors]
+        sensor_angles: numpy array углов в радианах [n_sectors]
+        lidar_offset_x: смещение лидара вперёд от центра (м)
+        lidar_offset_y: смещение лидара вбок от центра (м)
+        max_range: максимальная дальность
+        min_range: минимальная валидная дальность
+    
+    Returns:
+        lidar_sectors_center: расстояния от центра робота (тот же shape)
+    """
+    if lidar_offset_x == 0 and lidar_offset_y == 0:
+        return np.array(lidar_sectors, copy=True)
+    
+    is_batch = lidar_sectors.ndim == 2
+    if not is_batch:
+        lidar_sectors = np.atleast_2d(lidar_sectors)
+    
+    n_sectors = lidar_sectors.shape[1]
+    angles = np.asarray(sensor_angles)
+    if len(angles) != n_sectors:
+        angles = np.arctan2(np.sin(angles), np.cos(angles))
+        # Extend or truncate if needed
+        if len(angles) < n_sectors:
+            sector_angle = 2 * np.pi / 40
+            angles = np.array([-np.pi + (i + 0.5) * sector_angle for i in range(n_sectors)])
+        else:
+            angles = angles[:n_sectors]
+    
+    # Vectorized: for each sector, d_center = sqrt((d*cos(α)+Lx)² + (d*sin(α)+Ly)²)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+    # lidar_sectors: [batch, n_sectors]
+    dx = lidar_sectors * cos_a + lidar_offset_x  # x from center to obstacle
+    dy = lidar_sectors * sin_a + lidar_offset_y  # y from center to obstacle
+    d_center = np.sqrt(dx**2 + dy**2)
+    
+    # Invalid/saturated values stay as-is (max_range)
+    valid = (lidar_sectors >= min_range) & (lidar_sectors <= max_range) & np.isfinite(lidar_sectors)
+    d_center = np.where(valid, d_center, lidar_sectors)
+    
+    # Clamp to valid range
+    d_center = np.clip(d_center, 0, max_range)
+    
+    if not is_batch:
+        return d_center[0]
+    return d_center
+
+
 def build_actor_observation(lidar_data_raw, sensor_angles, angular_vel, distance,
                            sin_angle, cos_angle, max_lidar_range, max_angular_vel,
                            max_distance, prev_action,
-                           lidar_downsample_bins=40, use_sector_processing=True):
+                           lidar_downsample_bins=40, use_sector_processing=True,
+                           lidar_offset_x=0.12, lidar_offset_y=0.0):
     """
     Build normalized observation for ACTOR.
     Total size: lidar(40) + w(1) + sin(1) + cos(1) + dist(1) + prev_actions(3) = 47.
-    С: W (угловая скорость), prev_action (3)
-    БЕЗ: Vx, Vy (линейные скорости)
+    Policy receives RAW lidar (no center-frame transform). Transform used only for collision/reward.
     """
     if use_sector_processing and sensor_angles is not None:
         lidar_sectors = process_lidar_to_sectors(
@@ -306,6 +364,8 @@ def build_actor_observation(lidar_data_raw, sensor_angles, angular_vel, distance
         )
     else:
         lidar_sectors = downsample_lidar(lidar_data_raw, lidar_downsample_bins)
+    
+    # Policy receives RAW lidar data (no transform). Transform used only for collision/reward.
     
     # Normalize lidar
     lidar_sectors = np.where(
@@ -343,37 +403,19 @@ def build_actor_observation(lidar_data_raw, sensor_angles, angular_vel, distance
 def build_critic_base_observation(lidar_data_raw, sensor_angles, vx, vy, angular_vel, distance,
                                   sin_angle, cos_angle, max_lidar_range, max_vx, max_vy,
                                   max_angular_vel, max_distance, prev_action,
-                                  lidar_downsample_bins=40, use_sector_processing=True):
+                                  lidar_downsample_bins=40, use_sector_processing=True,
+                                  lidar_offset_x=0.12, lidar_offset_y=0.0):
     """
     Build normalized observation FOR CRITIC.
     Total size: Actor(47) + vx(1) + vy(1) = 49.
     """
-    if use_sector_processing and sensor_angles is not None:
-        lidar_sectors = process_lidar_to_sectors(
-            lidar_data_raw, sensor_angles,
-            num_sectors=lidar_downsample_bins,
-            max_range=max_lidar_range,
-            min_range=0.25  # Фильтруем точки ближе 0.25м (как в lidar_2d_processor)
-        )
-    else:
-        lidar_sectors = downsample_lidar(lidar_data_raw, lidar_downsample_bins)
-    
-    # Normalize lidar: clip to valid range, then normalize to [-1, 1]
-    # IMPORTANT: Filter invalid values before normalization
-    lidar_sectors = np.where(
-        (lidar_sectors >= 0) & (lidar_sectors <= max_lidar_range) & np.isfinite(lidar_sectors),
-        lidar_sectors,
-        max_lidar_range  # Replace invalid with max range
-    )
-    lidar_data = np.clip(lidar_sectors, 0, max_lidar_range) / max_lidar_range
-    lidar_data = lidar_data * 2.0 - 1.0  # Normalize to [-1, 1]: -1 = close, 1 = far
-    
-    # Сначала строим Actor observation (47 features)
+    # Сначала строим Actor observation (47 features) - включает transform в center frame
     actor_obs = build_actor_observation(
         lidar_data_raw, sensor_angles, angular_vel, distance,
         sin_angle, cos_angle, max_lidar_range, max_angular_vel,
         max_distance, prev_action,
-        lidar_downsample_bins, use_sector_processing
+        lidar_downsample_bins, use_sector_processing,
+        lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
     )
     
     # Добавляем Vx и Vy для Critic
@@ -394,7 +436,8 @@ def build_critic_observation(lidar_data_raw, sensor_angles, vx, vy, angular_vel,
                              sin_angle, cos_angle, max_lidar_range, max_vx, max_vy,
                              max_angular_vel, max_distance, prev_action,
                              lidar_downsample_bins=40, use_sector_processing=True, 
-                             use_extended_features=False, critical_topk=0):
+                             use_extended_features=False, critical_topk=0,
+                             lidar_offset_x=0.12, lidar_offset_y=0.0):
     """
     Build observation for critic (Asymmetric).
     Base: Actor(47) + vx(1) + vy(1) = 49 features, plus optional extra features.
@@ -407,7 +450,8 @@ def build_critic_observation(lidar_data_raw, sensor_angles, vx, vy, angular_vel,
         lidar_data_raw, sensor_angles, vx, vy, angular_vel, distance,
         sin_angle, cos_angle, max_lidar_range, max_vx, max_vy,
         max_angular_vel, max_distance, prev_action,
-        lidar_downsample_bins, use_sector_processing
+        lidar_downsample_bins, use_sector_processing,
+        lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
     )
     
     if critical_topk > 0:

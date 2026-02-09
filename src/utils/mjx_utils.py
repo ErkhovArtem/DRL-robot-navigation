@@ -2,7 +2,10 @@
 MJX (MuJoCo XLA) utilities for parallel batched simulation.
 """
 import numpy as np
-from .observation import fix_negative_lidar_values, build_critic_observation
+from .observation import (
+    fix_negative_lidar_values, build_critic_observation,
+    process_lidar_to_sectors, transform_lidar_to_center_frame
+)
 from .target_generator import get_target_info, ROOM_X_MAX, ROOM_X_MIN, ROOM_Y_MAX, ROOM_Y_MIN
 from .reward import compute_reward_reference_vectorized
 
@@ -156,7 +159,8 @@ def initialize_batch_episodes_mjx(mjx_model, batch_size, spawn_generator, m,
 def extract_observations_from_batch(mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, 
                                    target_positions, prev_actions, max_lidar_range, max_vx, max_vy,
                                    max_angular_vel, max_distance, lidar_downsample_bins,
-                                   critic_critical_topk=0, lidar_noise_std=0.0):
+                                   critic_critical_topk=0, lidar_noise_std=0.0,
+                                   lidar_offset_x=0.12, lidar_offset_y=0.0):
     """
     Extract observations from batched MJX data.
     Returns critic observations: Actor(47) + vx(1) + vy(1) + topk = 49 + topk
@@ -201,7 +205,8 @@ def extract_observations_from_batch(mjx_data, lidar_sensor_ids, lidar_sensor_ang
             lidar_downsample_bins,
             use_sector_processing=True,
             use_extended_features=False,
-            critical_topk=critic_critical_topk
+            critical_topk=critic_critical_topk,
+            lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
         )
         observations.append(obs)
     
@@ -217,7 +222,7 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
                                   target_body_id, target_mocap_id, reward_weights,
                                   config, args, max_steps=2000, train=True,
                                   critic_critical_topk=0, critic_history_length=0,
-                                  lidar_noise_std=0.0):
+                                  lidar_noise_std=0.0, lidar_offset_x=0.12, lidar_offset_y=0.0):
     """
     Run a full batch of parallel episodes using MJX and collect all experiences.
     
@@ -245,7 +250,11 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
     # Normalization parameters
     max_lidar_range = 3.0
     max_vx = config["cmd_scale"][0]
+    max_vy = config["cmd_scale"][1]
     max_angular_vel = config["cmd_scale"][2]
+    lidar_config = config.get("lidar", {})
+    lidar_offset_x = lidar_config.get("offset_x", 0.12)
+    lidar_offset_y = lidar_config.get("offset_y", 0.0)
     room_width = ROOM_X_MAX - ROOM_X_MIN
     room_height = ROOM_Y_MAX - ROOM_Y_MIN
     max_distance = np.sqrt(room_width**2 + room_height**2)
@@ -289,8 +298,9 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
     # Initialize prev_distances (extended observations for critic)
     observations_init, robot_positions_init, robot_quats_init, distances_init = extract_observations_from_batch(
         mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, target_positions,
-        prev_actions, max_lidar_range, max_vx, max_angular_vel, max_distance, lidar_downsample_bins,
-        critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std
+        prev_actions, max_lidar_range, max_vx, max_vy, max_angular_vel, max_distance, lidar_downsample_bins,
+        critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std,
+        lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
     )
     prev_distances = distances_init.copy()
     # Replace any NaN/Inf with default value
@@ -327,12 +337,11 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
                     critic_histories[i].clear()
         
         # Extract observations for active episodes (Asymmetric observation space)
-        # Для MJX нужен max_vy
-        max_vy = config["cmd_scale"][1]
         observations_extended, robot_positions, robot_quats, distances = extract_observations_from_batch(
             mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, target_positions,
             prev_actions, max_lidar_range, max_vx, max_vy, max_angular_vel, max_distance, lidar_downsample_bins,
-            critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std
+            critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std,
+            lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
         )
         
         # Actor state dimension (47 features: lidar + w + sin + cos + dist + prev)
@@ -403,19 +412,31 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
             batch_vx_cmd = actions[active_indices, 0] * config["cmd_scale"][0]  # [num_active]
             batch_vy_cmd = actions[active_indices, 1] * config["cmd_scale"][1]  # [num_active]
             
+            # Transform lidar to center frame for collision and reward
+            batch_lidar_sectors = process_lidar_to_sectors(
+                batch_lidar_data_raw, lidar_sensor_angles,
+                num_sectors=40, max_range=max_lidar_range, min_range=0.25
+            )
+            batch_lidar_center = transform_lidar_to_center_frame(
+                batch_lidar_sectors, lidar_sensor_angles,
+                lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+                max_range=max_lidar_range, min_range=0.25
+            )
+            
             # ВЫЗОВ ФУНКЦИИ НАГРАД (Vectorized Reference Style)
-            # Check for goal and collision
+            # Check for goal and collision (using center-frame lidar)
             diff = batch_target_pos[:, :2] - batch_robot_pos[:, :2]
             dists = np.linalg.norm(diff, axis=1)
             
             goals = dists < 0.25
-            collisions = np.min(batch_lidar_data_raw, axis=1) < 0.35
+            collision_threshold = reward_weights.get('collision_threshold', 0.35)
+            collisions = np.min(batch_lidar_center, axis=1) < collision_threshold
             
             # Use vectorized reference reward logic
             batch_rewards, batch_dones_from_reward, batch_reward_info = compute_reward_reference_vectorized(
                 robot_pos=batch_robot_pos,
                 target_pos=batch_target_pos,
-                lidar_data=batch_lidar_data_raw,
+                lidar_data=batch_lidar_center,
                 actions=prev_actions[active_indices],
                 goal=goals,
                 collision=collisions,
