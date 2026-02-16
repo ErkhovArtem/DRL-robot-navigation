@@ -349,12 +349,27 @@ def build_actor_observation(lidar_data_raw, sensor_angles, angular_vel, distance
                            sin_angle, cos_angle, max_lidar_range, max_angular_vel,
                            max_distance, prev_action,
                            lidar_downsample_bins=40, use_sector_processing=True,
-                           lidar_offset_x=0.12, lidar_offset_y=0.0):
+                           lidar_offset_x=0.12, lidar_offset_y=0.0,
+                           obs_noise_distance_std=0.0, obs_noise_angle_std=0.0, obs_noise_angular_vel_std=0.0,
+                           obs_noise_lidar_std=0.0):
     """
     Build normalized observation for ACTOR.
     Total size: lidar(40) + w(1) + sin(1) + cos(1) + dist(1) + prev_actions(3) = 47.
     Policy receives RAW lidar (no center-frame transform). Transform used only for collision/reward.
+    Optional observation noise for sim-to-real (only when std > 0). Critic always gets clean data.
     """
+    # Apply observation noise (sim-to-real) when std > 0 - only for Actor
+    if obs_noise_distance_std > 0:
+        distance = distance + np.random.normal(0, obs_noise_distance_std)
+        distance = np.maximum(distance, 0.0)
+    if obs_noise_angular_vel_std > 0:
+        angular_vel = angular_vel + np.random.normal(0, obs_noise_angular_vel_std)
+    if obs_noise_angle_std > 0:
+        angle = np.arctan2(sin_angle, cos_angle)
+        angle = angle + np.random.normal(0, obs_noise_angle_std)
+        sin_angle = np.sin(angle)
+        cos_angle = np.cos(angle)
+    
     if use_sector_processing and sensor_angles is not None:
         lidar_sectors = process_lidar_to_sectors(
             lidar_data_raw, sensor_angles,
@@ -365,7 +380,11 @@ def build_actor_observation(lidar_data_raw, sensor_angles, angular_vel, distance
     else:
         lidar_sectors = downsample_lidar(lidar_data_raw, lidar_downsample_bins)
     
-    # Policy receives RAW lidar data (no transform). Transform used only for collision/reward.
+    # Add lidar noise for Actor only (sim-to-real)
+    if obs_noise_lidar_std > 0:
+        noise = np.random.normal(0, obs_noise_lidar_std, size=lidar_sectors.shape).astype(np.float32)
+        lidar_sectors = lidar_sectors + noise
+        lidar_sectors = np.clip(lidar_sectors, 0.0, max_lidar_range)
     
     # Normalize lidar
     lidar_sectors = np.where(
@@ -408,14 +427,16 @@ def build_critic_base_observation(lidar_data_raw, sensor_angles, vx, vy, angular
     """
     Build normalized observation FOR CRITIC.
     Total size: Actor(47) + vx(1) + vy(1) = 49.
+    Critic ALWAYS gets clean data (no observation noise).
     """
-    # Сначала строим Actor observation (47 features) - включает transform в center frame
     actor_obs = build_actor_observation(
         lidar_data_raw, sensor_angles, angular_vel, distance,
         sin_angle, cos_angle, max_lidar_range, max_angular_vel,
         max_distance, prev_action,
         lidar_downsample_bins, use_sector_processing,
-        lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
+        lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+        obs_noise_distance_std=0.0, obs_noise_angle_std=0.0, obs_noise_angular_vel_std=0.0,
+        obs_noise_lidar_std=0.0
     )
     
     # Добавляем Vx и Vy для Critic

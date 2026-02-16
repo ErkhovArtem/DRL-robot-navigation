@@ -3,7 +3,7 @@ MJX (MuJoCo XLA) utilities for parallel batched simulation.
 """
 import numpy as np
 from .observation import (
-    fix_negative_lidar_values, build_critic_observation,
+    fix_negative_lidar_values, build_critic_observation, build_actor_observation,
     process_lidar_to_sectors, transform_lidar_to_center_frame
 )
 from .target_generator import get_target_info, ROOM_X_MAX, ROOM_X_MIN, ROOM_Y_MAX, ROOM_Y_MIN
@@ -159,46 +159,40 @@ def initialize_batch_episodes_mjx(mjx_model, batch_size, spawn_generator, m,
 def extract_observations_from_batch(mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, 
                                    target_positions, prev_actions, max_lidar_range, max_vx, max_vy,
                                    max_angular_vel, max_distance, lidar_downsample_bins,
-                                   critic_critical_topk=0, lidar_noise_std=0.0,
-                                   lidar_offset_x=0.12, lidar_offset_y=0.0):
+                                   critic_critical_topk=0,
+                                   lidar_offset_x=0.12, lidar_offset_y=0.0,
+                                   obs_noise_distance_std=0.0, obs_noise_angle_std=0.0,
+                                   obs_noise_angular_vel_std=0.0, obs_noise_lidar_std=0.0,
+                                   add_actor_noise=False):
     """
     Extract observations from batched MJX data.
-    Returns critic observations: Actor(47) + vx(1) + vy(1) + topk = 49 + topk
+    Returns (critic_observations, actor_observations, robot_positions, robot_quats, distances).
+    Critic obs: clean. Actor obs: with noise when add_actor_noise and obs_noise_* > 0.
     """
-    observations = []
+    critic_observations = []
+    actor_observations = []
     
-    # Extract data from batched structure
-    robot_positions = np.array(mjx_data.qpos[:, 0:3])  # [batch_size, 3]
-    robot_quats = np.array(mjx_data.qpos[:, 3:7])  # [batch_size, 4]
-    
-    sensordata_array = np.array(mjx_data.sensordata)  # [batch_size, nsensordata]
-    qvel_array = np.array(mjx_data.qvel)  # [batch_size, nv]
+    robot_positions = np.array(mjx_data.qpos[:, 0:3])
+    robot_quats = np.array(mjx_data.qpos[:, 3:7])
+    sensordata_array = np.array(mjx_data.sensordata)
+    qvel_array = np.array(mjx_data.qvel)
     
     for i in range(batch_size):
-        # Extract lidar data for this episode
         lidar_data_raw = sensordata_array[i, lidar_sensor_ids]
         lidar_data_raw = fix_negative_lidar_values(lidar_data_raw)
+        # Lidar stays clean - noise only in build_actor_observation when add_actor_noise
         
-        # Add Gaussian noise if configured
-        if lidar_noise_std > 0:
-            noise = np.random.normal(0, lidar_noise_std, size=lidar_data_raw.shape).astype(np.float32)
-            lidar_data_raw = lidar_data_raw + noise
-            lidar_data_raw = np.clip(lidar_data_raw, 0.0, max_lidar_range)
-        
-        # Extract velocities (Vx, Vy, W)
         vx = float(qvel_array[i, 0])
         vy = float(qvel_array[i, 1])
         angular_vel = float(qvel_array[i, 5])
         
-        # Calculate distance to target
         robot_pos = robot_positions[i]
         target_pos = target_positions[i]
         robot_quat = robot_quats[i]
-        
         distance, sin_angle, cos_angle = get_target_info(robot_pos, target_pos, robot_quat)
         
-        # Build observation for critic (Actor(47) + vx + vy = 49 + topk)
-        obs = build_critic_observation(
+        # Critic obs: always clean
+        obs_critic = build_critic_observation(
             lidar_data_raw, lidar_sensor_angles, vx, vy, angular_vel, distance,
             sin_angle, cos_angle, max_lidar_range, max_vx, max_vy,
             max_angular_vel, max_distance, prev_actions[i],
@@ -208,21 +202,39 @@ def extract_observations_from_batch(mjx_data, lidar_sensor_ids, lidar_sensor_ang
             critical_topk=critic_critical_topk,
             lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
         )
-        observations.append(obs)
+        critic_observations.append(obs_critic)
+        
+        # Actor obs: with noise when add_actor_noise and training
+        if add_actor_noise and (obs_noise_distance_std > 0 or obs_noise_angle_std > 0 or
+                                obs_noise_angular_vel_std > 0 or obs_noise_lidar_std > 0):
+            obs_actor = build_actor_observation(
+                lidar_data_raw, lidar_sensor_angles, angular_vel, distance,
+                sin_angle, cos_angle, max_lidar_range, max_angular_vel,
+                max_distance, prev_actions[i],
+                lidar_downsample_bins, use_sector_processing=True,
+                lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+                obs_noise_distance_std=obs_noise_distance_std,
+                obs_noise_angle_std=obs_noise_angle_std,
+                obs_noise_angular_vel_std=obs_noise_angular_vel_std,
+                obs_noise_lidar_std=obs_noise_lidar_std
+            )
+        else:
+            obs_actor = obs_critic[:47]  # First 47 = actor base (clean)
+        actor_observations.append(obs_actor)
     
-    observations = np.array(observations)
+    critic_observations = np.array(critic_observations)
+    actor_observations = np.array(actor_observations)
     distances = np.array([get_target_info(robot_positions[i], target_positions[i], robot_quats[i])[0] 
                           for i in range(batch_size)])
     
-    return observations, robot_positions, robot_quats, distances
+    return critic_observations, actor_observations, robot_positions, robot_quats, distances
 
 
 def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_generator,
                                   agent, replay_buffer, m, lidar_sensor_ids, lidar_sensor_angles,
                                   target_body_id, target_mocap_id, reward_weights,
                                   config, args, max_steps=2000, train=True,
-                                  critic_critical_topk=0, critic_history_length=0,
-                                  lidar_noise_std=0.0, lidar_offset_x=0.12, lidar_offset_y=0.0):
+                                  critic_critical_topk=0, critic_history_length=0):
     """
     Run a full batch of parallel episodes using MJX and collect all experiences.
     
@@ -295,12 +307,21 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
     prev_dones = np.zeros(batch_size, dtype=bool)
     prev_successes = np.zeros(batch_size, dtype=bool)
     
+    obs_noise = config.get("observation_noise", {})
+    obs_noise_dist = obs_noise.get("distance_std", 0.0)
+    obs_noise_angle = obs_noise.get("angle_std", 0.0)
+    obs_noise_angvel = obs_noise.get("angular_vel_std", 0.0)
+    obs_noise_lidar = obs_noise.get("lidar_std", 0.0)
+    
     # Initialize prev_distances (extended observations for critic)
-    observations_init, robot_positions_init, robot_quats_init, distances_init = extract_observations_from_batch(
+    critic_obs_init, actor_obs_init, robot_positions_init, robot_quats_init, distances_init = extract_observations_from_batch(
         mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, target_positions,
         prev_actions, max_lidar_range, max_vx, max_vy, max_angular_vel, max_distance, lidar_downsample_bins,
-        critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std,
-        lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
+        critic_critical_topk=critic_critical_topk,
+        lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+        obs_noise_distance_std=obs_noise_dist, obs_noise_angle_std=obs_noise_angle,
+        obs_noise_angular_vel_std=obs_noise_angvel, obs_noise_lidar_std=obs_noise_lidar,
+        add_actor_noise=train
     )
     prev_distances = distances_init.copy()
     # Replace any NaN/Inf with default value
@@ -336,34 +357,32 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
                 if critic_history_length > 0:
                     critic_histories[i].clear()
         
-        # Extract observations for active episodes (Asymmetric observation space)
-        observations_extended, robot_positions, robot_quats, distances = extract_observations_from_batch(
+        # Extract observations: critic (clean) for replay, actor (noisy when train) for get_action
+        critic_observations, actor_observations, robot_positions, robot_quats, distances = extract_observations_from_batch(
             mjx_data, lidar_sensor_ids, lidar_sensor_angles, m, batch_size, target_positions,
             prev_actions, max_lidar_range, max_vx, max_vy, max_angular_vel, max_distance, lidar_downsample_bins,
-            critic_critical_topk=critic_critical_topk, lidar_noise_std=lidar_noise_std,
-            lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
+            critic_critical_topk=critic_critical_topk,
+            lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+            obs_noise_distance_std=obs_noise_dist, obs_noise_angle_std=obs_noise_angle,
+            obs_noise_angular_vel_std=obs_noise_angvel, obs_noise_lidar_std=obs_noise_lidar,
+            add_actor_noise=train
         )
         
-        # Actor state dimension (47 features: lidar + w + sin + cos + dist + prev)
         actor_state_dim = 47
         
-        # Current stacked observations for this step
         current_stacked_actor_obs = [None] * batch_size
         current_stacked_critic_obs = [None] * batch_size
         
-        # 1. Process all active episodes: update histories and get stacked observations
         for i in range(batch_size):
             if not episode_dones[i]:
-                # Actor: base observation только (без history, без extra features)
-                actor_obs_single = observations_extended[i][:actor_state_dim]  # Первые 47 (base)
+                actor_obs_single = actor_observations[i]
                 # Добавляем историю actions к наблюдению Actor
                 current_stacked_actor_obs[i] = agent.process_observation(
                     actor_obs_single, is_critic=False, action_history_buffer=actor_action_histories[i]
                 )
                 
-                # Critic: full extended observation (может быть шире чем actor) + может иметь историю наблюдений
                 current_stacked_critic_obs[i] = agent.process_observation(
-                    observations_extended[i], is_critic=True, history_buffer=critic_histories[i]
+                    critic_observations[i], is_critic=True, history_buffer=critic_histories[i]
                 )
         
         # 2. Get actions from policy for all active episodes using stacked actor observations
@@ -395,14 +414,9 @@ def run_batched_episodes_mjx_full(mjx_model, mjx_step_fn, batch_size, spawn_gene
             
             # Извлечь lidar данные для активных эпизодов
             sensordata_array = np.array(mjx_data.sensordata)  # [batch_size, n_sensors]
-            batch_lidar_data_raw = sensordata_array[active_indices][:, lidar_sensor_ids]  # [num_active, n_lidar]
+            batch_lidar_data_raw = sensordata_array[active_indices][:, lidar_sensor_ids]
             batch_lidar_data_raw = fix_negative_lidar_values(batch_lidar_data_raw)
-            
-            # Add Gaussian noise if configured
-            if lidar_noise_std > 0:
-                noise = np.random.normal(0, lidar_noise_std, size=batch_lidar_data_raw.shape).astype(np.float32)
-                batch_lidar_data_raw = batch_lidar_data_raw + noise
-                batch_lidar_data_raw = np.clip(batch_lidar_data_raw, 0.0, max_lidar_range)
+            # Lidar stays clean for reward/collision. Noise only in Actor obs.
             
             # Извлечь глобальную скорость для активных эпизодов
             qvel_array = np.array(mjx_data.qvel)  # [batch_size, nq]

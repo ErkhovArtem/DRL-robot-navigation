@@ -184,11 +184,17 @@ if __name__ == "__main__":
     
     # Load lidar config
     lidar_config = config.get("lidar", {})
-    lidar_noise_std = lidar_config.get("noise_std", 0.0)
     lidar_offset_x = lidar_config.get("offset_x", 0.12)
     lidar_offset_y = lidar_config.get("offset_y", 0.0)
-    if lidar_noise_std > 0:
-        print(f"Lidar noise enabled: std={lidar_noise_std}m")
+    # Observation noise for Actor only (sim-to-real); Critic gets clean data
+    obs_noise_config = config.get("observation_noise", {})
+    obs_noise_distance_std = obs_noise_config.get("distance_std", 0.0)
+    obs_noise_angle_std = obs_noise_config.get("angle_std", 0.0)
+    obs_noise_angular_vel_std = obs_noise_config.get("angular_vel_std", 0.0)
+    obs_noise_lidar_std = obs_noise_config.get("lidar_std", 0.0)
+    if any(x > 0 for x in [obs_noise_distance_std, obs_noise_angle_std, obs_noise_angular_vel_std, obs_noise_lidar_std]):
+        print(f"Observation noise (Actor only): dist={obs_noise_distance_std}m, angle={obs_noise_angle_std}rad, "
+              f"ang_vel={obs_noise_angular_vel_std}rad/s, lidar={obs_noise_lidar_std}m")
     print(f"Lidar offset: ({lidar_offset_x}m, {lidar_offset_y}m) - transform to center frame enabled")
     
     # Initialize Curriculum Manager
@@ -810,8 +816,7 @@ if __name__ == "__main__":
                             max_steps=2000,
                             train=args.train,
                             critic_critical_topk=critic_critical_topk,
-                            critic_history_length=critic_history_length,
-                            lidar_noise_std=lidar_noise_std
+                            critic_history_length=critic_history_length
                         )
                         success = True
                         break  # Success, exit retry loop
@@ -1531,13 +1536,7 @@ if __name__ == "__main__":
                             break
                         # Fix negative values that can cause false collision detection
                         lidar_data_raw = fix_negative_lidar_values(lidar_data_raw)
-                        
-                        # Add Gaussian noise if configured
-                        if lidar_noise_std > 0:
-                            noise = np.random.normal(0, lidar_noise_std, size=lidar_data_raw.shape).astype(np.float32)
-                            lidar_data_raw = lidar_data_raw + noise
-                            # Keep within valid range [0, max_lidar_range]
-                            lidar_data_raw = np.clip(lidar_data_raw, 0.0, max_lidar_range)
+                        # Lidar stays clean for collision/reward. Noise added only in build_actor_observation.
                         
                         # Check for collision - use lidar transformed to center frame
                         collision_detected = False
@@ -1643,7 +1642,11 @@ if __name__ == "__main__":
                                 max_distance, prev_action_np,
                                 lidar_downsample_bins,
                                 use_sector_processing=True,
-                                lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y
+                                lidar_offset_x=lidar_offset_x, lidar_offset_y=lidar_offset_y,
+                                obs_noise_distance_std=obs_noise_distance_std if args.train else 0.0,
+                                obs_noise_angle_std=obs_noise_angle_std if args.train else 0.0,
+                                obs_noise_angular_vel_std=obs_noise_angular_vel_std if args.train else 0.0,
+                                obs_noise_lidar_std=obs_noise_lidar_std if args.train else 0.0
                             )
                             
                             # Critic: Actor(47) + vx(1) + vy(1) = 49, плюс история и critical_topk
@@ -1880,12 +1883,7 @@ if __name__ == "__main__":
                                 if len(lidar_sensor_ids) > 0:
                                     lidar_distances = d.sensordata[lidar_sensor_ids]
                                     lidar_distances = fix_negative_lidar_values(lidar_distances)
-                                    # Add Gaussian noise for visualization if configured
-                                    if lidar_noise_std > 0:
-                                        noise = np.random.normal(0, lidar_noise_std, size=lidar_distances.shape).astype(np.float32)
-                                        lidar_distances = lidar_distances + noise
-                                        lidar_distances = np.clip(lidar_distances, 0.0, max_lidar_range)
-                                    
+                                    # Visualization uses clean lidar (noise only in Actor obs)
                                     lidar_sectors = process_lidar_to_sectors(
                                         lidar_distances, lidar_sensor_angles,
                                         num_sectors=40, max_range=3.0, min_range=0.25

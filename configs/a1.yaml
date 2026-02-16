@@ -134,6 +134,13 @@ lidar:
   offset_x: 0.12   # Distance from robot center to lidar (m) - for transform to center frame
   offset_y: 0.0    # Lateral offset (m), typically 0
 
+# Observation noise (sim-to-real, applied only to Actor during training; Critic gets clean data)
+observation_noise:
+  distance_std: 0.05      # Std of Gaussian noise for distance to target (m)
+  angle_std: 0.05         # Std for direction to target (rad, ~3 deg)
+  angular_vel_std: 0.02   # Std for angular velocity (rad/s)
+  lidar_std: 0.02         # Std for lidar (m), same as lidar.noise_std
+
 # Obstacle generator - progressive difficulty
 obstacle_generator:
   regeneration_interval: 2
