@@ -211,6 +211,9 @@ if __name__ == "__main__":
         'position': config.get("obstacle_generator", {}).get("position", {}).copy()
     }
     
+    # Episode parameters (max_steps, etc.) - can be overridden by curriculum
+    episode_params = {'max_steps': config.get("max_steps", 5000)}
+    
     # Apply initial curriculum level (if any)
     # Note: policy_config will be created later, so we'll apply curriculum after policy_config is ready
 
@@ -222,10 +225,16 @@ if __name__ == "__main__":
     # Apply initial curriculum level (if any) - updates policy_config and replay_buffer config
     replay_buffer_config = config.get("replay_buffer", {}).copy()
     if curriculum_manager:
+        # Inference mode: use maximum difficulty (last level) from the start
+        if not args.train and curriculum_manager.levels:
+            curriculum_manager.current_level_idx = len(curriculum_manager.levels) - 1
+            curriculum_manager.episodes_on_current_level = 0
+            print(f"Inference mode: forcing maximum difficulty (Level {curriculum_manager.current_level_idx + 1})")
         curriculum_manager.apply_current_level(
             reward_weights, obstacle_params, 
             policy_config=policy_config, 
-            replay_buffer_config=replay_buffer_config
+            replay_buffer_config=replay_buffer_config,
+            episode_params=episode_params
         )
         print(f"Applied curriculum Level {curriculum_manager.current_level_idx + 1} settings.")
     
@@ -759,11 +768,15 @@ if __name__ == "__main__":
     position_config = obstacle_params.get("position", {})
     min_pos_margin = position_config.get("min_margin", 0.5)
     
+    # Episode max steps (from curriculum or config)
+    current_max_steps = episode_params.get("max_steps", config.get("max_steps", 5000))
+    
     # Log loaded configuration
     print(f"\n=== Obstacle Generator Configuration ===")
     print(f"  Regeneration interval: {obstacle_regeneration_interval}")
     print(f"  Cubes: min={cube_count_min}, max={cube_count_max}")
     print(f"  Position margin: {min_pos_margin}")
+    print(f"  Max steps per episode: {current_max_steps}")
     print()
     
     try:
@@ -789,7 +802,10 @@ if __name__ == "__main__":
                 if current_batch_size <= 0:
                     break
                 
-                print(f"\n=== Batch {batch_idx + 1}/{num_batches} (size: {current_batch_size}) ===")
+                # Refresh max_steps from curriculum (may have changed on level up)
+                mjx_max_steps = episode_params.get("max_steps", config.get("max_steps", 5000))
+                
+                print(f"\n=== Batch {batch_idx + 1}/{num_batches} (size: {current_batch_size}, max_steps={mjx_max_steps}) ===")
                 
                 # Run batched episodes with retry on OOM
                 max_retries = 5
@@ -813,7 +829,7 @@ if __name__ == "__main__":
                             reward_weights=reward_weights,
                             config=config,
                             args=args,
-                            max_steps=2000,
+                            max_steps=mjx_max_steps,
                             train=args.train,
                             critic_critical_topk=critic_critical_topk,
                             critic_history_length=critic_history_length
@@ -888,7 +904,8 @@ if __name__ == "__main__":
                                 curriculum_manager.apply_current_level(
                                     reward_weights, obstacle_params,
                                     policy_config=policy_config,
-                                    replay_buffer_config=replay_buffer_config
+                                    replay_buffer_config=replay_buffer_config,
+                                    episode_params=episode_params
                                 )
                                 
                                 # Re-extract training parameters from updated policy_config
@@ -916,9 +933,10 @@ if __name__ == "__main__":
                                 cube_count_min = cube_config.get("count_min", cube_count_min)
                                 cube_count_max = cube_config.get("count_max", cube_count_max)
                                 min_pos_margin = obstacle_params.get("position", {}).get("min_margin", min_pos_margin)
+                                mjx_max_steps = episode_params.get("max_steps", config.get("max_steps", 5000))
                                 
                                 print(f"New parameters applied: Batch={training_batch_size}, Iterations={training_iterations}, "
-                                      f"Cubes={cube_count_min}-{cube_count_max}, Margin={min_pos_margin}")
+                                      f"Cubes={cube_count_min}-{cube_count_max}, Margin={min_pos_margin}, MaxSteps={mjx_max_steps}")
                         
                         # Train SAC periodically
                         if episode_idx % train_every_n == 0 and replay_buffer.size() >= min_buffer_size:
@@ -1339,7 +1357,7 @@ if __name__ == "__main__":
                 
                 episode_reward = 0
                 # step_count already initialized above (before viewer creation)
-                max_steps = config.get("max_steps", 5000)  # Max steps per episode (from config)
+                max_steps = episode_params.get("max_steps", config.get("max_steps", 5000))  # From curriculum or config
                 done = False  # Initialize done flag
                 # Initialize planned commands (used if SAC not called yet)
                 vx_cmd = 0.0
@@ -2034,7 +2052,8 @@ if __name__ == "__main__":
                         curriculum_manager.apply_current_level(
                             reward_weights, obstacle_params,
                             policy_config=policy_config,
-                            replay_buffer_config=replay_buffer_config
+                            replay_buffer_config=replay_buffer_config,
+                            episode_params=episode_params
                         )
                         
                         # Re-extract training parameters from updated policy_config
@@ -2066,8 +2085,9 @@ if __name__ == "__main__":
                         cube_size_y_min = cube_config.get("size_y_min", cube_size_y_min)
                         cube_size_y_max = cube_config.get("size_y_max", cube_size_y_max)
                         min_pos_margin = obstacle_params.get("position", {}).get("min_margin", min_pos_margin)
+                        max_steps = episode_params.get("max_steps", config.get("max_steps", 5000))
                         
-                        print(f"New parameters applied: Cubes={cube_count_min}-{cube_count_max}, Margin={min_pos_margin}")
+                        print(f"New parameters applied: Cubes={cube_count_min}-{cube_count_max}, Margin={min_pos_margin}, MaxSteps={max_steps}")
 
                 # Calculate average reward components for this episode
                 if reward_components['count'] > 0:

@@ -17,6 +17,13 @@ curriculum:
       target_metrics:
         success_rate: 0.20   # Низкий порог для первого уровня
       
+      # Прогрессивная сложность: мало препятствий, короткий эпизод
+      obstacle_generator:
+        cubes:
+          count_min: 3
+          count_max: 5
+      max_steps: 6000       # ~120 сек при 50Hz
+      
       reward_weights:
         collision: -300.0              # Меньше, чем финальный (учимся)
         obs_penalty_weight: 3.0        # Меньше, чем финальный
@@ -45,6 +52,12 @@ curriculum:
       # Цель: научиться избегать препятствий, меньше коллизий
       target_metrics:
         success_rate: 0.40
+      
+      obstacle_generator:
+        cubes:
+          count_min: 4
+          count_max: 7
+      max_steps: 7500
       
       reward_weights:
         collision: -400.0              # Увеличиваем штраф
@@ -75,6 +88,12 @@ curriculum:
       # Цель: минимизировать коллизии, повысить успех
       target_metrics:
         success_rate: 0.60
+      
+      obstacle_generator:
+        cubes:
+          count_min: 6
+          count_max: 9
+      max_steps: 9000
       
       reward_weights:
         collision: -500.0              # КРИТИЧЕСКИЙ штраф (как в базовом)
@@ -109,6 +128,12 @@ curriculum:
       target_metrics:
         success_rate: 0.88 # было 75
       
+      obstacle_generator:
+        cubes:
+          count_min: 8
+          count_max: 12
+      max_steps: 11000
+      
       reward_weights:
         collision: -600.0              # ЕЩЕ ВЫШЕ - коллизии недопустимы
         obs_penalty_weight: 5.5        # Еще сильнее
@@ -140,6 +165,12 @@ curriculum:
       # Цель: 95%+ успеха, 0% коллизий
       target_metrics:
         success_rate: 0.95
+      
+      obstacle_generator:
+        cubes:
+          count_min: 10
+          count_max: 14
+      max_steps: 13000
       
       reward_weights:
         collision: -800.0              # КАТАСТРОФИЧЕСКИЙ штраф
@@ -173,6 +204,12 @@ curriculum:
       target_metrics:
         success_rate: 0.95
       
+      obstacle_generator:
+        cubes:
+          count_min: 12
+          count_max: 17
+      max_steps: 15000
+      
       reward_weights:
         collision: -1000.0             # ЗАПРЕТИТЕЛЬНЫЙ штраф
         obs_penalty_weight: 7.0        # ЭКСТРЕМАЛЬНЫЙ страх
@@ -204,6 +241,12 @@ curriculum:
       # Цель: 95%+ успеха, идеальная прямолинейность, 0% коллизий
       target_metrics:
         success_rate: 0.97  # Очень высокая планка
+      
+      obstacle_generator:
+        cubes:
+          count_min: 15
+          count_max: 20
+      max_steps: 17000
       
       reward_weights:
         collision: -1500.0             # КАТАСТРОФИЧЕСКИЙ штраф (выше Level 6)

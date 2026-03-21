@@ -70,9 +70,9 @@ class CurriculumManager:
             return "Base"
         return self.levels[self.current_level_idx].get('name', f"Level {self.current_level_idx + 1}")
 
-    def apply_current_level(self, reward_weights, obstacle_params, policy_config=None, replay_buffer_config=None):
+    def apply_current_level(self, reward_weights, obstacle_params, policy_config=None, replay_buffer_config=None, episode_params=None):
         """
-        Apply current level parameters to reward weights, obstacle generator, SAC, and replay buffer.
+        Apply current level parameters to reward weights, obstacle generator, SAC, replay buffer, and episode settings.
         Incremental approach: applies all overrides from Level 1 up to current level.
         
         Args:
@@ -80,6 +80,7 @@ class CurriculumManager:
             obstacle_params (dict): Obstacle parameters to update in-place
             policy_config (dict): SAC policy config to update in-place (optional)
             replay_buffer_config (dict): Replay buffer config to update in-place (optional)
+            episode_params (dict): Episode parameters (max_steps, etc.) to update in-place (optional)
         """
         # Apply overrides from Level 1 up to current level
         for i in range(self.current_level_idx + 1):
@@ -102,6 +103,10 @@ class CurriculumManager:
                     if 'position' not in obstacle_params:
                         obstacle_params['position'] = {}
                     obstacle_params['position'].update(og['position'])
+            
+            # Update episode parameters (max_steps, etc.)
+            if episode_params is not None and 'max_steps' in level_data:
+                episode_params['max_steps'] = level_data['max_steps']
             
             # Update SAC parameters
             if policy_config is not None:
