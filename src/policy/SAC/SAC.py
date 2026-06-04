@@ -7,7 +7,6 @@ from statistics import mean
 from .SAC_utils import soft_update_params, to_np
 from .SAC_critic import DoubleQCritic as critic_model
 from .SAC_actor import DiagGaussianActor as actor_model
-from torch.utils.tensorboard import SummaryWriter
 
 from collections import deque
 
@@ -164,8 +163,8 @@ class SAC(object):
         self.step = 0
         self.alpha_min = 0.0  # Default alpha_min (may be set from config)
         self.alpha_update_frequency = 1 # Default (not used, alpha updates every time like src2)
-        # Use provided writer or create new one
-        self.writer = writer if writer is not None else SummaryWriter()
+        # TensorBoard only when caller passes a writer (training). Inference uses writer=None.
+        self.writer = writer
         
     def reset_history(self):
         """Сброс истории наблюдений и действий."""
@@ -433,7 +432,7 @@ class SAC(object):
             )
 
         for key, value in self.train_metrics_dict.items():
-            if len(value):
+            if self.writer is not None and len(value):
                 self.writer.add_scalar(key, mean(value), self.step)
             self.train_metrics_dict[key] = []
         self.step += 1
@@ -544,13 +543,14 @@ class SAC(object):
             current_Q2, target_Q
         )
         self.train_metrics_dict["train_critic/loss_av"].append(critic_loss.item())
-        self.writer.add_scalar("train_critic/loss", critic_loss, step)
+        if self.writer is not None:
+            self.writer.add_scalar("train_critic/loss", critic_loss, step)
 
         # Optimize the critic
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
-        if self.log_dist_and_hist:
+        if self.log_dist_and_hist and self.writer is not None:
             self.critic.log(self.writer, step)
 
     def update_actor_and_alpha(self, obs, step):
@@ -611,15 +611,16 @@ class SAC(object):
         self.train_metrics_dict["train_actor/loss_av"].append(actor_loss.item())
         self.train_metrics_dict["train_actor/target_entropy_av"].append(self.target_entropy)
         self.train_metrics_dict["train_actor/entropy_av"].append(-log_prob.mean().item())
-        self.writer.add_scalar("train_actor/loss", actor_loss, step)
-        self.writer.add_scalar("train_actor/target_entropy", self.target_entropy, step)
-        self.writer.add_scalar("train_actor/entropy", -log_prob.mean(), step)
+        if self.writer is not None:
+            self.writer.add_scalar("train_actor/loss", actor_loss, step)
+            self.writer.add_scalar("train_actor/target_entropy", self.target_entropy, step)
+            self.writer.add_scalar("train_actor/entropy", -log_prob.mean(), step)
 
         # optimize the actor
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
-        if self.log_dist_and_hist:
+        if self.log_dist_and_hist and self.writer is not None:
             self.actor.log(self.writer, step)
 
         if self.learnable_temperature:
@@ -647,7 +648,8 @@ class SAC(object):
         reward = torch.Tensor(batch_rewards).to(self.device)
         done = torch.Tensor(batch_dones).to(self.device)
         self.train_metrics_dict["train/batch_reward_av"].append(batch_rewards.mean().item())
-        self.writer.add_scalar("train/batch_reward", batch_rewards.mean(), step)
+        if self.writer is not None:
+            self.writer.add_scalar("train/batch_reward", batch_rewards.mean(), step)
 
         self.update_critic(state, action, reward, next_state, done, step)
 

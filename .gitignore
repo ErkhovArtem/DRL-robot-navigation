@@ -9,10 +9,9 @@ dist/
 build/
 
 # Model files
-*.pt
+# *.pt
 # *.pth
 *.pkl
-*.json
 
 # Data files
 data/buffer/*.npz

@@ -1,0 +1,8 @@
+{
+  "git_commit": "51d3fa0bbc0a8319ac74cd1dc3e2b16cc7e7295d",
+  "git_branch": "artem",
+  "git_dirty": true,
+  "description": "add obstacle curriculum",
+  "config_file": "a1.yaml",
+  "episode": 10000
+}

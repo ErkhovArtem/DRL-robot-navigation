@@ -1,0 +1,279 @@
+# Конфигурация Curriculum Learning для G1 Path Planning
+# ОПТИМИЗИРОВАНА ДЛЯ: 95% успеха, 5% таймаут, 0% коллизий
+curriculum:
+  # Общие настройки логики переключения
+  settings:
+    metric_window: 100          # Окно (кол-во эпизодов) для усреднения success_rate и reward
+    min_episodes_per_level: 150  # БОЛЬШЕ эпизодов на уровне (было 100)
+
+  # Уровни обучения - ПЛАВНЫЙ ПРОГРЕСС
+  levels:
+    # ============================================================
+    # LEVEL 1: Initial Learning - Learn to Move
+    # ============================================================
+    - level: 1
+      name: "Initial_Learning"
+      # Цель: научиться двигаться к цели, базовое избегание
+      target_metrics:
+        success_rate: 0.20   # Низкий порог для первого уровня
+      
+      # Прогрессивная сложность: мало препятствий, короткий эпизод
+      obstacle_generator:
+        cubes:
+          count_min: 3
+          count_max: 5
+      max_steps: 6000       # ~120 сек при 50Hz
+      
+      reward_weights:
+        collision: -300.0              # Меньше, чем финальный (учимся)
+        obs_penalty_weight: 3.0        # Меньше, чем финальный
+        obstacle_threshold: 1.6        # Шире зона (легче избегать)
+        progress: 25.0                 # Высокая награда за движение вперед
+        time_penalty: -0.01            # Почти нет (учимся не спешить)
+        w_penalty_weight: -0.2
+      
+      sac:
+        init_temperature: 0.1          # НИЗКИЙ - МАКСИМАЛЬНОЕ исследование (learnable alpha защищает от схлопывания)
+        alpha_lr: 0.0003               # Быстрая адаптация энтропии (увеличено для реакции)
+        training_iterations: 2         # Минимальное переобучение
+        batch_size: 128                # Маленький батч
+        actor_lr: 0.0002               # Быстрое обучение
+        critic_lr: 0.0005
+      
+      replay_buffer:
+        success_weight: 1.5            # Учимся на успехах (уменьшено для баланса)
+        collision_weight: 1.5          # Учимся на коллизиях (увеличено)
+
+    # ============================================================
+    # LEVEL 2: Obstacle Awareness - Learn to Avoid
+    # ============================================================
+    - level: 2
+      name: "Obstacle_Awareness"
+      # Цель: научиться избегать препятствий, меньше коллизий
+      target_metrics:
+        success_rate: 0.40
+      
+      obstacle_generator:
+        cubes:
+          count_min: 4
+          count_max: 7
+      max_steps: 7500
+      
+      reward_weights:
+        collision: -400.0              # Увеличиваем штраф
+        obs_penalty_weight: 4.0        # Усиливаем страх препятствий
+        obstacle_threshold: 1.5        # Немного сужаем зону
+        progress: 22.0                 # Чуть меньше (баланс с избеганием)
+        time_penalty: -0.015
+        obstacle_exponential_scale: 5.5  # Более резкий рост штрафа
+        w_penalty_weight: -0.3
+      
+      sac:
+        init_temperature: 0.15         # Низкий - хорошее исследование
+        alpha_lr: 0.00025
+        training_iterations: 3
+        batch_size: 192
+        actor_lr: 0.00015
+        critic_lr: 0.0004
+      
+      replay_buffer:
+        success_weight: 2.0
+        collision_weight: 1.5          # Учимся на коллизиях
+
+    # ============================================================
+    # LEVEL 3: Collision Reduction - Eliminate Collisions
+    # ============================================================
+    - level: 3
+      name: "Collision_Reduction"
+      # Цель: минимизировать коллизии, повысить успех
+      target_metrics:
+        success_rate: 0.60
+      
+      obstacle_generator:
+        cubes:
+          count_min: 6
+          count_max: 9
+      max_steps: 9000
+      
+      reward_weights:
+        collision: -500.0              # КРИТИЧЕСКИЙ штраф (как в базовом)
+        obs_penalty_weight: 5.0        # МАКСИМАЛЬНЫЙ страх (как в базовом)
+        obstacle_threshold: 1.5
+        progress: 20.0                 # Базовое значение
+        time_penalty: -0.02
+        velocity_alignment: 0.7           # Reward for moving "face forward" (0.0 = disabled)
+        velocity_alignment_threshold: 0.1 # Minimum velocity to apply alignment reward (m/s)
+        vy_penalty: -0.5
+        obstacle_exponential_scale: 5.0
+        vx_backward_penalty: -2.5      # Больше штраф за назад
+      
+      sac:
+        init_temperature: 0.2          # Базовое - баланс exploration/exploitation
+        alpha_lr: 0.0002
+        training_iterations: 4         # Базовое
+        batch_size: 256                # Базовое
+        actor_lr: 0.0001               # Базовое
+        critic_lr: 0.0003              # Базовое
+      
+      replay_buffer:
+        success_weight: 1.5
+        collision_weight: 2.0          # БОЛЬШЕ вес коллизий - учимся избегать
+
+    # ============================================================
+    # LEVEL 4: Efficiency - Optimize Path
+    # ============================================================
+    - level: 4
+      name: "Efficiency_Optimization"
+      # Цель: эффективные траектории, быстрое достижение
+      target_metrics:
+        success_rate: 0.88 # было 75
+      
+      obstacle_generator:
+        cubes:
+          count_min: 8
+          count_max: 12
+      max_steps: 11000
+      
+      reward_weights:
+        collision: -600.0              # ЕЩЕ ВЫШЕ - коллизии недопустимы
+        obs_penalty_weight: 5.5        # Еще сильнее
+        obstacle_threshold: 1.4        # Чуть меньше зона
+        progress: 25.0                 # Награда за быстрое движение
+        time_penalty: -0.1            # Штраф за медленность
+        obstacle_exponential_scale: 5.5
+        vx_backward_penalty: -3.0      # Максимальный штраф за назад
+        w_penalty_weight: -0.5
+        vy_penalty: -1
+      
+      sac:
+        init_temperature: 0.3          # Умеренный - баланс сдвинут к exploitation
+        alpha_lr: 0.00015
+        training_iterations: 5
+        batch_size: 320
+        actor_lr: 0.00008
+        critic_lr: 0.00025
+      
+      replay_buffer:
+        success_weight: 1.5
+        collision_weight: 3.0          # МАКСИМАЛЬНЫЙ вес коллизий
+
+    # ============================================================
+    # LEVEL 5: Mastery - Perfect Performance
+    # ============================================================
+    - level: 5
+      name: "Mastery"
+      # Цель: 95%+ успеха, 0% коллизий
+      target_metrics:
+        success_rate: 0.95
+      
+      obstacle_generator:
+        cubes:
+          count_min: 10
+          count_max: 14
+      max_steps: 13000
+      
+      reward_weights:
+        collision: -800.0              # КАТАСТРОФИЧЕСКИЙ штраф
+        obs_penalty_weight: 6.0        # МАКСИМАЛЬНЫЙ страх
+        obstacle_threshold: 1.3        # Узкая зона безопасности
+        progress: 30.0                 # Высокая награда за эффективность
+        time_penalty: -0.1            # Больше штраф за время
+        obstacle_exponential_scale: 6.0  # Максимальная крутизна
+        vx_backward_penalty: -3.0 
+        vy_penalty: -2
+        w_penalty_weight: -1 
+      
+      sac:
+        init_temperature: 0.4          # Повышенный - начинаем переход к deterministic
+        alpha_lr: 0.00010
+        training_iterations: 6
+        batch_size: 384
+        actor_lr: 0.00005
+        critic_lr: 0.0002
+      
+      replay_buffer:
+        success_weight: 1.0
+        collision_weight: 5.0          # КРИТИЧЕСКИЙ вес - учимся на ошибках
+
+    # ============================================================
+    # LEVEL 6: Perfection - Zero Collisions
+    # ============================================================
+    - level: 6
+      name: "Perfection"
+      # Цель: 95%+ успеха, абсолютно 0% коллизий
+      target_metrics:
+        success_rate: 0.95
+      
+      obstacle_generator:
+        cubes:
+          count_min: 12
+          count_max: 17
+      max_steps: 15000
+      
+      reward_weights:
+        collision: -1000.0             # ЗАПРЕТИТЕЛЬНЫЙ штраф
+        obs_penalty_weight: 7.0        # ЭКСТРЕМАЛЬНЫЙ страх
+        obstacle_threshold: 1.2        # Максимально узкая зона
+        progress: 35.0                 # Максимальная награда за прогресс
+        time_penalty: -0.15            # Штраф за медленность
+        obstacle_exponential_scale: 7.0  # Максимальная крутизна
+        vx_backward_penalty: -5.0      # Полный запрет назад
+        w_penalty_weight: -2
+        vy_penalty: -3  
+      
+      sac:
+        init_temperature: 0.6          # Высокий - deterministic policy
+        alpha_lr: 0.00008
+        training_iterations: 8
+        batch_size: 448
+        actor_lr: 0.00003
+        critic_lr: 0.00015
+      
+      replay_buffer:
+        success_weight: 1.5
+        collision_weight: 10.0         # МАКСИМАЛЬНЫЙ вес - учимся на каждой коллизии
+
+    # ============================================================
+    # LEVEL 7: Polish & Perfection - Final Fine-Tuning
+    # ============================================================
+    - level: 7
+      name: "Polish_And_Perfection"
+      # Цель: 95%+ успеха, идеальная прямолинейность, 0% коллизий
+      target_metrics:
+        success_rate: 0.97  # Очень высокая планка
+      
+      obstacle_generator:
+        cubes:
+          count_min: 15
+          count_max: 20
+      max_steps: 17000
+      
+      reward_weights:
+        collision: -1500.0             # КАТАСТРОФИЧЕСКИЙ штраф (выше Level 6)
+        obs_penalty_weight: 8.0        # МАКСИМАЛЬНЫЙ страх препятствий
+        obstacle_threshold: 1.15       # ЕЩЕ более узкая зона безопасности
+        progress: 40.0                 # МАКСИМАЛЬНАЯ награда за прогресс
+        time_penalty: -0.16            # Умеренный штраф (не спешить, но и не медлить)
+        obstacle_exponential_scale: 8.0  # Максимальная крутизна экспоненты
+        vx_backward_penalty: -6.0      # АБСОЛЮТНЫЙ запрет назад
+
+        velocity_alignment: 1.0           # Reward for moving "face forward" (0.0 = disabled)
+        velocity_alignment_threshold: 0.05 # Minimum velocity to apply alignment reward (m/s)
+        
+        # === НОВОЕ: Прямолинейность движения ===
+        velocity_alignment: 2.0        # ВЫСОКАЯ награда за движение "лицом вперед"
+        velocity_alignment_threshold: 0.05  # Более строгий порог (было 0.1)
+        w_penalty_weight: -4
+        vy_penalty: -5               # Штраф за боковое движение (держим курс)
+      
+      sac:
+        init_temperature: 0.8          # МАКСИМАЛЬНЫЙ - полностью deterministic policy
+        alpha_lr: 0.00005              # Медленная адаптация (стабильность)
+        training_iterations: 10        # Больше итераций для полировки
+        batch_size: 512                # Большой батч для стабильности
+        actor_lr: 0.00001              # Минимальные изменения политики
+        critic_lr: 0.00010             # Минимальные изменения value функции
+      
+      replay_buffer:
+        success_weight: 2.0            # Учимся на успехах (повторяем хорошее)
+        collision_weight: 15.0         # КРИТИЧЕСКИЙ вес коллизий (избегаем плохого)

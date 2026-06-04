@@ -1,0 +1,8 @@
+{
+  "git_commit": "028bfba0af06064ac0bcc97aed8928e4f5b547c6",
+  "git_branch": "artem",
+  "git_dirty": true,
+  "description": "add noise",
+  "config_file": "a1.yaml",
+  "episode": 10000
+}

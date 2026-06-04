@@ -62,6 +62,12 @@ from utils.observation import (
 )
 from utils.mjx_utils import create_mjx_batched_step_fn, run_batched_episodes_mjx_full, MJX_AVAILABLE
 from policy.walking_policy import load_walking_policy_from_checkpoint
+from utils.run_metadata import (
+    build_run_metadata,
+    copy_run_configs,
+    load_existing_run_metadata,
+    make_save_metadata,
+)
 
 
 if __name__ == "__main__":
@@ -80,6 +86,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_every_n", type=int, default=100, help="save model every N episodes")
     parser.add_argument("--use_mjx", action="store_true", help="use MJX for parallel batched simulation (requires mujoco-mjx)")
     parser.add_argument("--batch_size", type=int, default=128, help="number of parallel environments for MJX (only used with --use_mjx)")
+    parser.add_argument("--description", type=str, default="", help="optional human-readable note stored in model metadata")
     args = parser.parse_args()
    
     # Load config file - try multiple possible locations
@@ -462,6 +469,8 @@ if __name__ == "__main__":
     
     # Determine model directory based on mode
     # Note: Directory is NOT created here - it will be created only when saving models
+    resumed_from_checkpoint = False
+    is_new_model_run = False
     if args.train:
         # Training mode
         if args.load_pretrained:
@@ -469,14 +478,17 @@ if __name__ == "__main__":
             latest_dir = find_latest_checkpoint_dir(base_models_dir)
             if latest_dir:
                 model_dir = latest_dir
+                resumed_from_checkpoint = True
                 print(f"Resuming training in existing directory: {model_dir}")
             else:
                 # No checkpoint found, will create new directory on first save
                 model_dir = base_models_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
+                is_new_model_run = True
                 print(f"No existing checkpoint found. Will create directory on first save: {model_dir}")
         else:
             # Start fresh training, will create new directory on first save
             model_dir = base_models_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
+            is_new_model_run = True
             print(f"Starting new training. Will create directory on first save: {model_dir}")
     else:
         # Test mode: always try to load from latest checkpoint
@@ -488,6 +500,35 @@ if __name__ == "__main__":
             # No checkpoint found, don't create directory (test mode doesn't save models)
             model_dir = None
             print(f"Test mode: No checkpoint found. Will initialize new model (no directory created)")
+
+    run_metadata = {}
+    run_artifacts_saved = False
+
+    def ensure_run_artifacts():
+        nonlocal run_artifacts_saved
+        if not args.train or model_dir is None or run_artifacts_saved:
+            return
+        model_dir.mkdir(parents=True, exist_ok=True)
+        if is_new_model_run:
+            configs_dir = copy_run_configs(model_dir, config_path, curriculum_path)
+            print(f"Saved config snapshot to: {configs_dir}")
+        run_artifacts_saved = True
+
+    if args.train and model_dir is not None:
+        if resumed_from_checkpoint:
+            run_metadata = load_existing_run_metadata(model_dir, model_name) or build_run_metadata(
+                config_path, args.description, PROJECT_ROOT
+            )
+            if args.description:
+                run_metadata["description"] = args.description
+        else:
+            run_metadata = build_run_metadata(config_path, args.description, PROJECT_ROOT)
+        git_commit = run_metadata.get("git_commit")
+        if git_commit:
+            dirty_suffix = "-dirty" if run_metadata.get("git_dirty") else ""
+            print(f"Run git commit: {git_commit[:7]}{dirty_suffix} ({run_metadata.get('git_branch')})")
+        if run_metadata.get("description"):
+            print(f"Run description: {run_metadata['description']}")
     
     # Initialize TensorBoard for logging (with unique subdirectory for each run)
     base_log_dir = Path(args.log_dir) if args.log_dir.startswith("/") else PROJECT_ROOT / "data" / args.log_dir
@@ -954,10 +995,10 @@ if __name__ == "__main__":
                         
                         # Save periodically (only in training mode)
                         if args.train and episode_idx % args.save_every_n == 0 and episode_idx > 0:
-                            # Create directory if it doesn't exist (lazy creation)
+                            ensure_run_artifacts()
                             if model_dir is not None:
                                 model_dir.mkdir(parents=True, exist_ok=True)
-                            metadata = {'episode': episode_idx}
+                            metadata = make_save_metadata(run_metadata, episode_idx)
                             agent.save(
                                 filename=model_name,
                                 directory=model_dir,
@@ -2130,11 +2171,10 @@ if __name__ == "__main__":
                     print("=" * 40)
                     
                     if args.train and episode % args.save_every_n == 0 and episode > 0:
-                        # Create directory if it doesn't exist (lazy creation)
+                        ensure_run_artifacts()
                         if model_dir is not None:
                             model_dir.mkdir(parents=True, exist_ok=True)
-                        # Save model with metadata (episode number)
-                        metadata = {'episode': episode}
+                        metadata = make_save_metadata(run_metadata, episode)
                         agent.save(
                             filename=model_name,
                             directory=model_dir,
@@ -2220,11 +2260,10 @@ if __name__ == "__main__":
         print("=" * 60 + "\n")
     
     if args.train:
-        # Create directory if it doesn't exist (lazy creation)
+        ensure_run_artifacts()
         if model_dir is not None:
             model_dir.mkdir(parents=True, exist_ok=True)
-        # Save model with metadata (episode number) at the end
-        metadata = {'episode': episode}
+        metadata = make_save_metadata(run_metadata, episode)
         agent.save(
             filename=model_name,
             directory=model_dir,
