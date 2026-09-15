@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch import distributions as pyd
 
-from .SAC_utils import mlp, weight_init
+from .utils import mlp, weight_init
 
 
 class TanhTransform(pyd.transforms.Transform):

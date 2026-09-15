@@ -4,9 +4,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from statistics import mean
-from .SAC_utils import soft_update_params, to_np
-from .SAC_critic import DoubleQCritic as critic_model
-from .SAC_actor import DiagGaussianActor as actor_model
+from .utils import soft_update_params, to_np
+from .critic import DoubleQCritic as critic_model
+from .actor import DiagGaussianActor as actor_model
 
 from collections import deque
 
@@ -363,13 +363,13 @@ class SAC(object):
         directory = Path(directory) if directory else self.load_directory
         
         self.actor.load_state_dict(
-            torch.load(directory / f"{filename}_actor.pth")
+            torch.load(directory / f"{filename}_actor.pth", map_location=self.device, weights_only=True)
         )
         self.critic.load_state_dict(
-            torch.load(directory / f"{filename}_critic.pth")
+            torch.load(directory / f"{filename}_critic.pth", map_location=self.device, weights_only=True)
         )
         self.critic_target.load_state_dict(
-            torch.load(directory / f"{filename}_critic_target.pth")
+            torch.load(directory / f"{filename}_critic_target.pth", map_location=self.device, weights_only=True)
         )
         
         # Load log_alpha unless fine_tuning
@@ -384,9 +384,11 @@ class SAC(object):
             else:
                 log_alpha_path = directory / f"{filename}_log_alpha.pth"
                 if log_alpha_path.exists():
-                    self.log_alpha = torch.load(log_alpha_path)
-                    # Ensure it requires grad
-                    self.log_alpha.requires_grad = True
+                    loaded_log_alpha = torch.load(
+                        log_alpha_path, map_location=self.device, weights_only=True
+                    )
+                    self.log_alpha.data.copy_(loaded_log_alpha)
+                    self.log_alpha.requires_grad_(True)
                     print(f"Loaded log_alpha: {self.log_alpha.item():.4f} (alpha: {self.alpha.item():.4f})")
                 else:
                     print(f"Warning: log_alpha file not found at {log_alpha_path}, using current value")

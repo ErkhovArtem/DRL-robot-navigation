@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from .SAC_utils import mlp, weight_init
+from .utils import mlp, weight_init
 
 
 class DoubleQCritic(nn.Module):

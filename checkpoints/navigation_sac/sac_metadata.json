@@ -1,0 +1,22 @@
+{
+  "git_commit": "51d3fa0bbc0a8319ac74cd1dc3e2b16cc7e7295d",
+  "git_branch": "artem",
+  "git_dirty": true,
+  "description": "Obstacle-curriculum baseline",
+  "config_file": "a1.yaml",
+  "episode": 10000,
+  "source_checkpoint": "20260503_162815",
+  "evaluation": {
+    "date": "2026-09-15",
+    "command": "python scripts/train.py configs/a1.yaml --headless --episodes 100 --seed 42",
+    "episodes": 100,
+    "seed": 42,
+    "curriculum_level": 7,
+    "successes": 74,
+    "collisions": 24,
+    "timeouts": 2,
+    "simulator": "MuJoCo 3.10.0 sequential",
+    "torch": "2.7.0+cu128",
+    "device": "NVIDIA GeForce RTX 4080"
+  }
+}

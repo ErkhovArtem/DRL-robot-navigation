@@ -1,25 +1,4 @@
-"""
-Training script for SAC cmd generation with FULL MJX (MuJoCo XLA) parallelization.
-Uses deploy_mujoco.py as environment - SAC generates cmd, which is fed to walking policy.
-
-MJX Integration:
-- FULL batched parallel simulation implemented (--use_mjx flag)
-- Parallel simulation of multiple episodes on GPU/TPU using JAX vmap
-- JIT-compiled step functions for maximum performance
-- Automatic batch dimension handling in MJX data structures
-- Compatible with existing SAC training pipeline
-
-Paths:
-- All paths (models, logs, configs, buffers) default to src/ directory
-
-Installation:
-- For MJX support: pip install mujoco-mjx
-- MJX enables GPU/TPU acceleration for parallel simulation (10-100x speedup)
-
-Usage:
-- Sequential mode: python train.py configs/g1.yaml --train --headless
-- MJX mode: python train.py configs/g1.yaml --train --headless --use_mjx --batch_size 128
-"""
+"""Train or evaluate the hierarchical SAC navigation controller in MuJoCo."""
 import time
 import mujoco.viewer
 import mujoco
@@ -27,14 +6,16 @@ import numpy as np
 import torch
 import yaml
 import argparse
+import random
+import shutil
 from pathlib import Path
 import os
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
-import time
 
 # Project root directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PUBLISHED_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "navigation_sac"
 
 # MJX imports (if available)
 try:
@@ -47,22 +28,22 @@ except ImportError:
     mjx = None
 
 # Import from package (after pip install -e .)
-from utils.reward import compute_reward, compute_reward_vectorized, compute_reward_reference, compute_reward_reference_vectorized
-from utils.target_generator import SpawnPointGenerator, get_target_info, ROOM_X_MIN, ROOM_X_MAX, ROOM_Y_MIN, ROOM_Y_MAX
-from utils.scene_generator import regenerate_scene_obstacles
-from policy.SAC.SAC import SAC
-from policy.replay_buffer import ReplayBuffer
-from utils.curriculum import CurriculumManager
-from utils.observation import (
+from dog_path_planning.utils.reward import compute_reward, compute_reward_vectorized, compute_reward_reference, compute_reward_reference_vectorized
+from dog_path_planning.utils.target_generator import SpawnPointGenerator, get_target_info, ROOM_X_MIN, ROOM_X_MAX, ROOM_Y_MIN, ROOM_Y_MAX
+from dog_path_planning.utils.scene_generator import regenerate_scene_obstacles
+from dog_path_planning.policy.sac.agent import SAC
+from dog_path_planning.policy.replay_buffer import ReplayBuffer
+from dog_path_planning.utils.curriculum import CurriculumManager
+from dog_path_planning.utils.observation import (
     get_gravity_orientation, build_walking_policy_observation,
     downsample_lidar, fix_negative_lidar_values, compute_lidar_sensor_angles,
     process_lidar_to_sectors, transform_lidar_to_center_frame,
     build_actor_observation, build_critic_base_observation,
     build_critic_observation
 )
-from utils.mjx_utils import create_mjx_batched_step_fn, run_batched_episodes_mjx_full, MJX_AVAILABLE
-from policy.walking_policy import load_walking_policy_from_checkpoint
-from utils.run_metadata import (
+from dog_path_planning.utils.mjx_utils import create_mjx_batched_step_fn, run_batched_episodes_mjx_full, MJX_AVAILABLE
+from dog_path_planning.policy.walking_policy import load_walking_policy_from_checkpoint
+from dog_path_planning.utils.run_metadata import (
     build_run_metadata,
     copy_run_configs,
     load_existing_run_metadata,
@@ -71,23 +52,40 @@ from utils.run_metadata import (
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("config_file", type=str, help="config file name")
-    parser.add_argument("--train", action="store_true", help="train mode (if not specified, runs in test/evaluation mode)")
-    parser.add_argument("--load_pretrained", action="store_true", help="in training mode: load last checkpoint and continue training; ignored in test mode (test mode always loads latest checkpoint)")
-    parser.add_argument("--fine_tune", action="store_true", help="fine-tuning mode: loads weights but resets entropy/buffer/optimizers")
-    parser.add_argument("--log_dir", type=str, default="runs", help="tensorboard log dir")
-    parser.add_argument("--sac_decimation", type=int, default=5, help="run SAC policy every N control cycles (on top of control_decimation)")
-    parser.add_argument("--episodes", type=int, default=1000, help="number of training episodes")
-    parser.add_argument("--headless", action="store_true", help="run without visualization (faster training)")
-    parser.add_argument("--fresh_buffer", action="store_true", help="start with empty replay buffer even if loading pretrained model")
-    parser.add_argument("--spawn_clearance", type=float, default=0.7, help="clearance from obstacles for spawn points (meters, accounts for robot radius)")
-    parser.add_argument("--grid_step", type=float, default=0.1, help="grid step size for free space generation (meters)")
-    parser.add_argument("--save_every_n", type=int, default=100, help="save model every N episodes")
-    parser.add_argument("--use_mjx", action="store_true", help="use MJX for parallel batched simulation (requires mujoco-mjx)")
-    parser.add_argument("--batch_size", type=int, default=128, help="number of parallel environments for MJX (only used with --use_mjx)")
-    parser.add_argument("--description", type=str, default="", help="optional human-readable note stored in model metadata")
+    parser = argparse.ArgumentParser(
+        description="Train SAC navigation or evaluate a saved checkpoint."
+    )
+    parser.add_argument("config_file", help="path to the robot YAML configuration")
+    parser.add_argument(
+        "--train", action="store_true",
+        help="train the policy; without this flag the script evaluates it",
+    )
+    parser.add_argument(
+        "--checkpoint-dir", type=Path,
+        help="checkpoint to evaluate or resume (default: bundled navigation checkpoint)",
+    )
+    parser.add_argument("--load-pretrained", "--load_pretrained", dest="load_pretrained", action="store_true", help="resume training from a checkpoint")
+    parser.add_argument("--fine-tune", "--fine_tune", dest="fine_tune", action="store_true", help="load weights but reset entropy, optimizers, and replay state")
+    parser.add_argument("--log-dir", "--log_dir", dest="log_dir", default="outputs/tensorboard", help="TensorBoard log directory")
+    parser.add_argument("--sac-decimation", "--sac_decimation", dest="sac_decimation", type=int, default=5, help="run SAC policy every N control cycles")
+    parser.add_argument("--episodes", type=int, default=10, help="number of training or evaluation episodes")
+    parser.add_argument("--seed", type=int, default=42, help="random seed")
+    parser.add_argument("--headless", action="store_true", help="run without visualization")
+    parser.add_argument("--fresh-buffer", "--fresh_buffer", dest="fresh_buffer", action="store_true", help="start with an empty replay buffer")
+    parser.add_argument("--spawn-clearance", "--spawn_clearance", dest="spawn_clearance", type=float, default=0.7, help="spawn clearance from obstacles in meters")
+    parser.add_argument("--grid-step", "--grid_step", dest="grid_step", type=float, default=0.1, help="free-space grid step in meters")
+    parser.add_argument("--save-every-n", "--save_every_n", dest="save_every_n", type=int, default=100, help="save every N episodes")
+    parser.add_argument("--use-mjx", "--use_mjx", dest="use_mjx", action="store_true", help="use MJX batched simulation")
+    parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=128, help="parallel MJX environments")
+    parser.add_argument("--description", default="", help="note stored in checkpoint metadata")
     args = parser.parse_args()
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    print(f"Random seed: {args.seed}")
    
     # Load config file - try multiple possible locations
     config_path = None
@@ -118,7 +116,7 @@ if __name__ == "__main__":
     
     print(f"Loading config from: {config_path}")
     with open(config_path, "r") as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)
+        config = yaml.safe_load(f)
     
     # Load curriculum config if exists
     curriculum_config = {}
@@ -126,13 +124,19 @@ if __name__ == "__main__":
     if curriculum_path.exists():
         print(f"Loading curriculum config from: {curriculum_path}")
         with open(curriculum_path, "r") as f:
-            curriculum_config = yaml.load(f, Loader=yaml.FullLoader)
+            curriculum_config = yaml.safe_load(f)
     else:
         print(f"Curriculum config not found at {curriculum_path}. Curriculum learning disabled.")
     
     # Resolve paths relative to project root
     walking_policy_path = str(PROJECT_ROOT / config.get("walking_policy_path", ""))
-    xml_path = str(PROJECT_ROOT / config["xml_path"])
+    scene_template_path = PROJECT_ROOT / config["xml_path"]
+    runtime_scene_path = scene_template_path.with_name(
+        f"{scene_template_path.stem}.generated{scene_template_path.suffix}"
+    )
+    shutil.copyfile(scene_template_path, runtime_scene_path)
+    xml_path = str(runtime_scene_path)
+    print(f"Runtime scene: {runtime_scene_path} (generated from {scene_template_path})" )
     
     # Get spawn parameters from config (with command-line override)
     spawn_config = config.get("obstacle_generator", {}).get("spawn", {})
@@ -444,17 +448,21 @@ if __name__ == "__main__":
     # Для совместимости используем actor_state_dim как state_dim (актор всегда получает первые actor_state_dim признаков)
     state_dim = actor_state_dim
 
-    # Base directory for models
-    base_models_dir = PROJECT_ROOT / "data" / "models"
+    # Generated training artifacts are kept outside tracked checkpoints.
+    base_models_dir = PROJECT_ROOT / "outputs" / "checkpoints"
     base_models_dir.mkdir(parents=True, exist_ok=True)
-    
+
     model_name = "sac"
-    buffer_dir = PROJECT_ROOT / "data" / "buffer"
+    buffer_dir = PROJECT_ROOT / "outputs" / "replay_buffers"
     buffer_dir.mkdir(parents=True, exist_ok=True)
+
+    requested_checkpoint = args.checkpoint_dir
+    if requested_checkpoint is not None and not requested_checkpoint.is_absolute():
+        requested_checkpoint = PROJECT_ROOT / requested_checkpoint
     
     # Function to find the latest checkpoint directory
     def find_latest_checkpoint_dir(base_dir):
-        """Find the most recent checkpoint directory based on modification time."""
+        """Return the lexically latest timestamped checkpoint directory."""
         if not base_dir.exists():
             return None
         
@@ -463,60 +471,60 @@ if __name__ == "__main__":
         if not subdirs:
             return None
         
-        # Sort by modification time (most recent first)
-        subdirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        # Timestamped directory names are deterministic across clones.
+        subdirs.sort(key=lambda x: x.name, reverse=True)
         return subdirs[0]
     
-    # Determine model directory based on mode
-    # Note: Directory is NOT created here - it will be created only when saving models
+    # Keep the published checkpoint immutable when starting a new training run.
     resumed_from_checkpoint = False
     is_new_model_run = False
+    load_model_dir = None
+
     if args.train:
-        # Training mode
-        if args.load_pretrained:
-            # Load from latest checkpoint and continue training in the same directory
-            latest_dir = find_latest_checkpoint_dir(base_models_dir)
-            if latest_dir:
-                model_dir = latest_dir
-                resumed_from_checkpoint = True
-                print(f"Resuming training in existing directory: {model_dir}")
-            else:
-                # No checkpoint found, will create new directory on first save
+        if args.load_pretrained or args.fine_tune:
+            source_dir = requested_checkpoint or find_latest_checkpoint_dir(base_models_dir)
+            if source_dir is None or not source_dir.is_dir():
+                raise FileNotFoundError(
+                    "No checkpoint is available to resume. Pass --checkpoint-dir."
+                )
+            resumed_from_checkpoint = True
+            load_model_dir = source_dir
+            if requested_checkpoint is not None:
                 model_dir = base_models_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
                 is_new_model_run = True
-                print(f"No existing checkpoint found. Will create directory on first save: {model_dir}")
+                print(f"Loading {source_dir}; new checkpoints will be saved to {model_dir}")
+            else:
+                model_dir = source_dir
+                print(f"Resuming training in {model_dir}")
         else:
-            # Start fresh training, will create new directory on first save
             model_dir = base_models_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
             is_new_model_run = True
-            print(f"Starting new training. Will create directory on first save: {model_dir}")
+            print(f"Starting fresh training; checkpoints will be saved to {model_dir}")
     else:
-        # Test mode: always try to load from latest checkpoint
-        latest_dir = find_latest_checkpoint_dir(base_models_dir)
-        if latest_dir:
-            model_dir = latest_dir
-            print(f"Test mode: Loading from latest checkpoint directory: {model_dir}")
-        else:
-            # No checkpoint found, don't create directory (test mode doesn't save models)
-            model_dir = None
-            print(f"Test mode: No checkpoint found. Will initialize new model (no directory created)")
+        model_dir = requested_checkpoint or PUBLISHED_CHECKPOINT
+        if not model_dir.is_dir():
+            raise FileNotFoundError(
+                f"Checkpoint directory not found: {model_dir}. "
+                "Pass --checkpoint-dir with a valid SAC checkpoint."
+            )
+        load_model_dir = model_dir
+        print(f"Evaluation mode: loading checkpoint from {model_dir}")
 
     run_metadata = {}
-    run_artifacts_saved = False
+    run_artifacts_state = {"saved": False}
 
     def ensure_run_artifacts():
-        nonlocal run_artifacts_saved
-        if not args.train or model_dir is None or run_artifacts_saved:
+        if not args.train or model_dir is None or run_artifacts_state["saved"]:
             return
         model_dir.mkdir(parents=True, exist_ok=True)
         if is_new_model_run:
             configs_dir = copy_run_configs(model_dir, config_path, curriculum_path)
             print(f"Saved config snapshot to: {configs_dir}")
-        run_artifacts_saved = True
+        run_artifacts_state["saved"] = True
 
     if args.train and model_dir is not None:
         if resumed_from_checkpoint:
-            run_metadata = load_existing_run_metadata(model_dir, model_name) or build_run_metadata(
+            run_metadata = load_existing_run_metadata(load_model_dir, model_name) or build_run_metadata(
                 config_path, args.description, PROJECT_ROOT
             )
             if args.description:
@@ -531,7 +539,7 @@ if __name__ == "__main__":
             print(f"Run description: {run_metadata['description']}")
     
     # Initialize TensorBoard for logging (with unique subdirectory for each run)
-    base_log_dir = Path(args.log_dir) if args.log_dir.startswith("/") else PROJECT_ROOT / "data" / args.log_dir
+    base_log_dir = Path(args.log_dir) if args.log_dir.startswith("/") else PROJECT_ROOT / args.log_dir
     # Create unique subdirectory for each run
     try:
         hostname = os.uname().nodename
@@ -594,7 +602,7 @@ if __name__ == "__main__":
             log_dist_and_hist=False,
             save_directory=model_dir,
             model_name=model_name,
-            load_directory=model_dir,
+            load_directory=load_model_dir,
             writer=writer,
             history_length=history_length,  # История actions для Actor
             critic_history_length=critic_history_length,  # История наблюдений для Critic
@@ -629,11 +637,11 @@ if __name__ == "__main__":
         # ПРОВЕРКА: совпадает ли размерность загружаемой модели с текущей
         # Skip if model_dir is None (test mode without checkpoint)
         if model_dir is not None:
-            model_path = model_dir / f"{model_name}_actor.pth"
+            model_path = load_model_dir / f"{model_name}_actor.pth"
             if model_path.exists():
                 try:
                     import torch
-                    loaded_state = torch.load(model_path, map_location='cpu')
+                    loaded_state = torch.load(model_path, map_location='cpu', weights_only=True)
                     loaded_obs_dim = loaded_state['trunk.0.weight'].shape[1]
                     
                     # Вычисляем ожидаемую stacked dimension
@@ -674,7 +682,7 @@ if __name__ == "__main__":
         
             metadata = agent.load(
                 filename=model_name,
-                directory=model_dir,
+                directory=load_model_dir,
                 fine_tune=args.fine_tune if args.train else False
             )
             # Restore episode number from metadata if available (unless fine-tuning or test mode)
@@ -2216,6 +2224,10 @@ if __name__ == "__main__":
                 # Ignore errors during cleanup - viewer may already be closed
                 print(f"Note: Viewer cleanup warning: {e}")
             viewer = None
+        try:
+            runtime_scene_path.unlink(missing_ok=True)
+        except OSError as error:
+            print(f"Could not remove generated scene {runtime_scene_path}: {error}")
     
     if writer is not None:
         writer.close()

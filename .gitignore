@@ -1,38 +1,33 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
-.Python
 *.egg-info/
-dist/
 build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Model files
-# *.pt
-# *.pth
-*.pkl
-
-# Data files
-data/buffer/*.npz
-runs/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Environment
+# Environments and local configuration
 .env
+.env.*
+.venv/
 venv/
 env/
-ENV/
+
+# Generated training and evaluation artifacts
+/data/
+/outputs/
+/runs/
+*.pkl
+*.onnx
+assets/unitree_a1/*.generated.xml
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

@@ -4,7 +4,7 @@
 Все компоненты наград нормализованы для лучшей сбалансированности.
 """
 import numpy as np
-from utils.target_generator import get_target_info
+from .target_generator import get_target_info
 
 
 def compute_reward_vectorized(robot_pos, target_pos, prev_distance, lidar_data, 

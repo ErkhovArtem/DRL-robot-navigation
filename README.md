@@ -1,90 +1,128 @@
-# Dog Path Planning
+# Unitree A1 SAC Navigation
 
-Path planning for quadruped robot using SAC (Soft Actor-Critic) reinforcement learning.
+Hierarchical reinforcement-learning navigation for a Unitree A1 quadruped in MuJoCo.
+A Soft Actor-Critic (SAC) policy turns a 2D LiDAR scan and relative goal into body
+velocity commands; a pretrained locomotion policy turns those commands into joint
+actions.
+
+```text
+LiDAR + relative goal + command history
+                  │
+                  ▼
+          SAC navigation actor
+                  │  [vx, vy, yaw rate]
+                  ▼
+        locomotion policy (PPO)
+                  │  12 joint targets
+                  ▼
+              Unitree A1
+```
+
+## Demo
+
+Demo media will be added here.
+
+## Included checkpoint
+
+The repository contains one navigation checkpoint in `checkpoints/navigation_sac` and
+one locomotion checkpoint in `checkpoints/locomotion`. The navigation model was trained for 10,000 episodes on the baseline SAC
+development line.
+
+| Evaluation | Episodes | Success | Collision | Timeout |
+| --- | ---: | ---: | ---: | ---: |
+| Maximum curriculum difficulty, seed 42 | 100 | 74% | 24% | 2% |
+
+The benchmark uses deterministic SAC actions and sequential headless MuJoCo. It is a
+100-episode sample, not a real-robot safety guarantee.
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.8 or higher
-- pip
-
-### 1. Set up conda environment
+Python 3.10–3.12 is supported. Python 3.11 is used in CI.
 
 ```bash
-conda create --name unitree-rl python=3.8
-conda activate unitree-rl
-```
-
-### 2. Install the package in development mode
-
-This is **required** for the project to work correctly. The package must be installed so that imports work properly.
-
-```bash
-
+git clone <repository-url>
 cd Dog_PathPlanning
-pip install -e .
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-This will install the package in editable mode, so changes to the code will be immediately available without reinstalling.
-
-### 3. Install optional dependencies
-
-For MJX support (GPU acceleration):
-```bash
-pip install -e .[mjx]
-```
-
-For ROS2 support (for lidar_2d_processor):
-```bash
-pip install -e .[ros2]
-```
-
-### Troubleshooting
-
-If you see import errors like `ModuleNotFoundError: No module named 'utils'`, make sure you've run `pip install -e .` first.
-
-## Project Structure
-
-```
-Dog_PathPlanning/
-├── src/                    # Source code (Python package)
-│   ├── policy/            # RL algorithms (SAC)
-│   └── utils/             # Utilities (reward, observation, etc.)
-├── scripts/               # Executable scripts
-│   ├── train.py          # Training script
-│   └── export_to_onnx.py # ONNX export
-├── configs/               # Configuration files
-├── data/                  # Models, logs, buffers
-├── assets/                # Static resources
-└── docs/                  # Documentation
-```
-
-## Usage
-
-### Training
+For batched MJX simulation, install the optional extra and then install the JAX build
+that matches your CUDA runtime if GPU acceleration is required:
 
 ```bash
-python scripts/train.py configs/a1.yaml --train --headless --episodes 10000 # add --load_pretrained to continue from last checkpoint
+python -m pip install -e ".[mjx]"
 ```
 
-### Inference trained policy
+## Evaluate the bundled policy
+
+Run a quick, deterministic headless evaluation:
 
 ```bash
-python scripts/train.py configs/a1.yaml
+python scripts/train.py configs/a1.yaml --headless --episodes 10 --seed 42
 ```
 
-### Export to ONNX
+Reproduce the table above with:
 
 ```bash
-python scripts/export_to_onnx.py --model_path data/models/sac_actor.pth --output_path sac_actor.onnx
+python scripts/train.py configs/a1.yaml --headless --episodes 100 --seed 42
 ```
 
-## Development
+Omit `--headless` to open the MuJoCo viewer. The script evaluates the bundled
+checkpoint by default; use `--checkpoint-dir PATH` to select another checkpoint.
+Generated scenes and evaluation outputs are ignored by Git.
 
-After installing in editable mode (`pip install -e .`), you can import modules directly:
+## Train
 
-```python
-from utils.reward import compute_reward
-from policy.SAC.SAC import SAC
+Sequential MuJoCo:
+
+```bash
+python scripts/train.py configs/a1.yaml \
+  --train --headless --episodes 10000 --seed 42
 ```
+
+Batched MJX:
+
+```bash
+python scripts/train.py configs/a1.yaml \
+  --train --headless --use_mjx --batch-size 32 --episodes 10000 --seed 42
+```
+
+Checkpoints, replay buffers, and TensorBoard events are written under `outputs/`.
+Resume the latest generated run with `--load-pretrained`. To initialize a new run from
+specific weights without modifying them, add
+`--fine-tune --checkpoint-dir checkpoints/navigation_sac`.
+
+## Export for deployment
+
+```bash
+python -m pip install -e ".[onnx]"
+python scripts/export_to_onnx.py --verify
+```
+
+See [`docs/deployment.md`](docs/deployment.md) for the exact 56-value observation
+layout and action scaling. Hardware-specific ROS 1 and Docker code is maintained in
+the separate
+[`unitree-a1-drl-navigation`](https://github.com/ErkhovArtem/unitree-a1-drl-navigation)
+repository.
+
+## Repository layout
+
+```text
+assets/                     MuJoCo A1 model and meshes
+checkpoints/locomotion/     low-level locomotion weights
+checkpoints/navigation_sac/ bundled SAC training state
+configs/                    robot and curriculum configuration
+scripts/                    evaluation, training, visualization, and ONNX export
+src/dog_path_planning/      reusable policy and simulation modules
+tests/                      checkpoint and scene-generation smoke tests
+```
+
+## Notes
+
+- Training and evaluation regenerate obstacles from `assets/unitree_a1/scene.xml`
+  without modifying that tracked template.
+- The Unitree model assets retain their upstream license in
+  `assets/unitree_a1/LICENSE`.
+- A project-wide source-code license has not yet been selected.
