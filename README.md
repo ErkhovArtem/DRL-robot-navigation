@@ -20,7 +20,7 @@ LiDAR + relative goal + command history
 
 ## Demo
 
-Demo media will be added here.
+![Unitree A1 navigation demo](docs/media/demo.gif)
 
 ## Included checkpoint
 
@@ -40,7 +40,7 @@ The benchmark uses deterministic SAC actions and sequential headless MuJoCo. It 
 Python 3.10–3.12 is supported. Python 3.11 is used in CI.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/ErkhovArtem/DRL-robot-navigation.git
 cd Dog_PathPlanning
 python3.11 -m venv .venv
 source .venv/bin/activate
@@ -102,9 +102,11 @@ python scripts/export_to_onnx.py --verify
 ```
 
 See [`docs/deployment.md`](docs/deployment.md) for the exact 56-value observation
-layout and action scaling. Hardware-specific ROS 1 and Docker code is maintained in
-the separate
-[`unitree-a1-drl-navigation`](https://github.com/ErkhovArtem/unitree-a1-drl-navigation)
+layout and action scaling.
+
+Inference code for running the exported policy on the real Unitree A1 is maintained
+in the separate
+[`unitree-a1-drl-navigation`](https://github.com/ErkhovArtem/unitree-a1-drl-navigation.git)
 repository.
 
 ## Repository layout
@@ -125,4 +127,4 @@ tests/                      checkpoint and scene-generation smoke tests
   without modifying that tracked template.
 - The Unitree model assets retain their upstream license in
   `assets/unitree_a1/LICENSE`.
-- A project-wide source-code license has not yet been selected.
+- Project source code is released under the MIT License; see [`LICENSE`](LICENSE).
